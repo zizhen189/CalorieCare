@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "504624694715",
+    "firebase_url": "https://caloriecare-164c4-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "caloriecare-164c4",
+    "storage_bucket": "caloriecare-164c4.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:504624694715:android:7f8e9cb93a158cd9ac309e",
+        "android_client_info": {
+          "package_name": "com.tarumt.myapp.caloriecare"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCIx6SuJ0yTg8MuVAMkEQFlunwxf16Vrbk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
