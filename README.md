@@ -1,4 +1,4 @@
-# caloriecare
+# CalorieCare
 
 FYP project.
 
