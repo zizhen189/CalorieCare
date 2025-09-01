@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/timezone.dart' as tz;
 import 'calorie_adjustment_service.dart';
 import 'notification_service.dart';
+import 'refresh_manager.dart';
 
 class AutoAdjustmentService {
   static final AutoAdjustmentService _instance = AutoAdjustmentService._internal();
@@ -11,10 +14,11 @@ class AutoAdjustmentService {
 
   final CalorieAdjustmentService _adjustmentService = CalorieAdjustmentService();
   final NotificationService _notificationService = NotificationService();
+  final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
   Timer? _dailyTimer;
   String? _currentUserId;
 
-  /// 启动自动调整服务（添加重复启动检查）
+    /// 启动自动调整服务（添加重复启动检查）
   Future<void> startAutoAdjustment(String userId) async {
     // 如果已经在运行且是同一个用户，直接返回
     if (_dailyTimer != null && _currentUserId == userId) {
@@ -37,6 +41,9 @@ class AutoAdjustmentService {
       return;
     }
 
+    // 【关键】app启动时检查是否有错过的调整
+    await _checkMissedAdjustmentOnStartup(userId);
+
     // 计算到下一个午夜12点的时间
     final now = DateTime.now();
     final nextMidnight = DateTime(now.year, now.month, now.day + 1);
@@ -45,10 +52,13 @@ class AutoAdjustmentService {
     print('Auto adjustment scheduled for ${nextMidnight.toIso8601String()}');
     print('Time until next execution: ${timeUntilMidnight.inHours}h ${timeUntilMidnight.inMinutes % 60}m');
 
-    // 设置每日定时器
+    // 设置每日定时器（app内）
     _dailyTimer = Timer(timeUntilMidnight, () {
       _executeDailyAutoAdjustment();
     });
+    
+    // 同时安排本地通知作为备用（app关闭时的兜底方案）
+    await _scheduleLocalNotificationBackup(userId, nextMidnight);
   }
 
   /// 停止自动调整服务
@@ -66,6 +76,14 @@ class AutoAdjustmentService {
     print('Executing daily auto adjustment for user $_currentUserId');
     
     try {
+      // 检查自动调整是否仍然启用
+      final isEnabled = await _adjustmentService.isAutoAdjustmentEnabled(_currentUserId!);
+      if (!isEnabled) {
+        print('Auto adjustment is disabled for user $_currentUserId, stopping service');
+        stopAutoAdjustment();
+        return;
+      }
+      
       // 双重检查：确保今天还没有进行过调整
       final hasAdjusted = await _adjustmentService.hasAdjustedToday(_currentUserId!);
       if (hasAdjusted) {
@@ -83,6 +101,9 @@ class AutoAdjustmentService {
         
         // 发送通知给用户
         await _notificationService.showAutoAdjustmentNotification(result: {'daily': result});
+        
+        // 触发页面刷新
+        RefreshManagerHelper.refreshAfterDailyAdjustment();
       } else {
         print('Auto adjustment completed with no changes needed: ${result['reason']}');
       }
@@ -100,6 +121,8 @@ class AutoAdjustmentService {
       _executeDailyAutoAdjustment();
     });
   }
+
+
 
   /// 立即执行一次自动调整（用于测试）
   Future<Map<String, dynamic>> executeNow(String userId) async {
@@ -153,6 +176,117 @@ class AutoAdjustmentService {
   bool get isRunning => _dailyTimer != null;
   
   String? get currentUserId => _currentUserId;
+
+  /// 【关键方法】app启动时检查错过的调整
+  Future<void> _checkMissedAdjustmentOnStartup(String userId) async {
+    try {
+      print('=== Checking for missed adjustments on startup ===');
+      
+      final now = DateTime.now();
+      final today = now.toIso8601String().split('T')[0];
+      
+      // 如果当前时间已经超过今天的12点，且今天还没有调整过，说明错过了
+      if (now.hour >= 0) { // 00:00之后就算是新的一天
+        final hasAdjustedToday = await _adjustmentService.hasAdjustedToday(userId);
+        
+        if (!hasAdjustedToday) {
+          print('Found missed adjustment for today: $today');
+          print('Current time: ${now.toIso8601String()}');
+          
+          // 立即执行错过的调整
+          final result = await _adjustmentService.performDailyAdjustment(userId);
+          
+          if (result['success']) {
+            print('Missed adjustment completed successfully: ${result}');
+            
+            // 发送补偿调整通知
+            await _notificationService.showAutoAdjustmentNotification(
+              result: {'daily': result},
+              isCatchUp: true,
+            );
+            
+            // 触发页面刷新
+            RefreshManagerHelper.refreshAfterMissedAdjustment();
+          } else {
+            print('Missed adjustment not needed: ${result['reason']}');
+          }
+        } else {
+          print('Today\'s adjustment already completed');
+        }
+      }
+    } catch (e) {
+      print('Error checking missed adjustments: $e');
+    }
+  }
+
+  /// 安排本地通知作为备用方案（app关闭时的兜底机制）
+  Future<void> _scheduleLocalNotificationBackup(String userId, DateTime scheduledTime) async {
+    try {
+      // 取消之前的通知
+      await _localNotifications.cancel(999); // 使用固定ID
+      
+      const AndroidNotificationDetails androidNotificationDetails = AndroidNotificationDetails(
+        'auto_adjustment_channel',
+        'Auto Adjustment Reminders',
+        channelDescription: 'Notifications to remind about calorie adjustments',
+        importance: Importance.high,
+        priority: Priority.high,
+        enableVibration: true,
+        playSound: true,
+      );
+      
+      const DarwinNotificationDetails iOSNotificationDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+      );
+      
+      const NotificationDetails notificationDetails = NotificationDetails(
+        android: androidNotificationDetails,
+        iOS: iOSNotificationDetails,
+      );
+      
+      // 转换为TZDateTime并安排通知在12点显示
+      final tzScheduledTime = tz.TZDateTime.from(scheduledTime, tz.local);
+      
+      await _localNotifications.zonedSchedule(
+        999, // 固定ID
+        'CalorieCare Auto Adjustment',
+        'Time for your daily calorie adjustment! Open the app to apply changes.',
+        tzScheduledTime,
+        notificationDetails,
+        uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+        matchDateTimeComponents: DateTimeComponents.time,
+      );
+      
+      print('Scheduled backup notification for ${scheduledTime.toIso8601String()}');
+    } catch (e) {
+      print('Error scheduling backup notification: $e');
+    }
+  }
+
+  /// 处理本地通知点击（当用户点击通知时触发调整）
+  Future<void> handleNotificationTap(String userId) async {
+    try {
+      print('Auto adjustment notification tapped, executing adjustment...');
+      
+      final result = await _adjustmentService.performDailyAdjustment(userId);
+      
+      if (result['success']) {
+        print('Notification-triggered adjustment completed: ${result}');
+        
+        // 显示成功通知
+        await _notificationService.showAutoAdjustmentNotification(
+          result: {'daily': result},
+          isManualTrigger: true,
+        );
+      } else {
+        print('Notification-triggered adjustment not needed: ${result['reason']}');
+      }
+    } catch (e) {
+      print('Error handling notification tap: $e');
+    }
+  }
 } 
 
 

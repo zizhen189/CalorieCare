@@ -10,6 +10,7 @@ import 'package:caloriecare/auto_adjustment_service.dart';
 import 'package:caloriecare/calorie_adjustment_page.dart';
 import 'package:caloriecare/weight_service.dart';
 import 'package:caloriecare/edit_profile_page.dart';
+import 'package:caloriecare/refresh_manager.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class ProfilePage extends StatefulWidget {
@@ -265,7 +266,7 @@ class _ProfilePageState extends State<ProfilePage> {
                                   size: 24,
                                 ),
                               ),
-                              const SizedBox(width: 16),
+                              const SizedBox(width: 8),
                               const Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -294,7 +295,7 @@ class _ProfilePageState extends State<ProfilePage> {
                               ),
                             ],
                           ),
-                          const SizedBox(height: 8),
+                          const SizedBox(height: 6),
                           const Text(
                             'Password must contain: at least 8 characters, one uppercase letter, one lowercase letter, and one number.',
                             style: TextStyle(
@@ -438,7 +439,7 @@ class _ProfilePageState extends State<ProfilePage> {
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 16),
+                              const SizedBox(width: 8),
                               Expanded(
                                 child: ElevatedButton(
                                   onPressed: _isLoading ? null : () async {
@@ -729,7 +730,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: Padding(
-                  padding: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -777,7 +778,7 @@ class _ProfilePageState extends State<ProfilePage> {
                               Colors.blue,
                             ),
                           ),
-                          const SizedBox(width: 12),
+                          const SizedBox(width: 10),
                           Expanded(
                             child: _buildStatCard(
                               'Weight',
@@ -827,6 +828,8 @@ class _ProfilePageState extends State<ProfilePage> {
                           if (result == true) {
                             // Reload fresh user data from database/session
                             await _refreshUserData();
+                            // 触发全局刷新
+                            RefreshManagerHelper.refreshAfterEditProfile();
                           }
                         },
                         icon: const Icon(Icons.edit, color: Colors.white),
@@ -894,6 +897,35 @@ class _ProfilePageState extends State<ProfilePage> {
                   subtitle: const Text('Update your account password'),
                   trailing: const Icon(Icons.arrow_forward_ios, size: 16),
                   onTap: _showChangePasswordDialog,
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Blacklist Management Option
+              Card(
+                elevation: 2,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.block,
+                      color: Colors.red,
+                    ),
+                  ),
+                  title: const Text(
+                    'Manage Blacklist',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: const Text('View and manage blocked users'),
+                  trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                  onTap: _showBlacklistManagement,
                 ),
               ),
               const SizedBox(height: 12),
@@ -1551,11 +1583,886 @@ class _ProfilePageState extends State<ProfilePage> {
       },
     );
   }
+
+  // Blacklist Management Methods
+  void _showBlacklistManagement() async {
+    try {
+      UserModel? currentUser = _displayUser ?? await SessionService.getUserSession();
+      if (currentUser == null) {
+        _showErrorDialog('Error', 'User not found. Please login again.');
+        return;
+      }
+
+      // 获取当前用户的黑名单
+      List<Map<String, dynamic>> blockedUsers = await _getBlockedUsers(currentUser.userID);
+      
+      showDialog(
+        context: context,
+        barrierDismissible: true,
+        builder: (BuildContext context) {
+          return StatefulBuilder(
+            builder: (context, setDialogState) {
+              return Dialog(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                elevation: 16,
+                child: Container(
+                  width: MediaQuery.of(context).size.width * 0.92,
+                  height: MediaQuery.of(context).size.height * 0.75,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(24),
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        Colors.white,
+                        Colors.grey.shade50,
+                      ],
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 20,
+                        offset: const Offset(0, 10),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    children: [
+                      // Enhanced Header with gradient background
+                      Container(
+                        padding: const EdgeInsets.all(24),
+                        decoration: BoxDecoration(
+                          borderRadius: const BorderRadius.only(
+                            topLeft: Radius.circular(24),
+                            topRight: Radius.circular(24),
+                          ),
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              Colors.red.shade400,
+                              Colors.red.shade600,
+                            ],
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: Colors.white.withOpacity(0.3),
+                                  width: 1,
+                                ),
+                              ),
+                              child: const Icon(
+                                Icons.security,
+                                color: Colors.white,
+                                size: 20,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Manage Blacklist',
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                  SizedBox(height: 2),
+                                  Text(
+                                    'View and unblock users',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: IconButton(
+                                onPressed: () => Navigator.of(context).pop(),
+                                icon: const Icon(
+                                  Icons.close_rounded,
+                                  color: Colors.white,
+                                  size: 20,
+                                ),
+                                splashRadius: 16,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      // Content Area
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: blockedUsers.isEmpty
+                              ? _buildEmptyBlacklistState()
+                              : Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    // Stats Header
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 16,
+                                        vertical: 12,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.blue.shade50,
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: Colors.blue.shade200,
+                                          width: 1,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          Icon(
+                                            Icons.info_outline,
+                                            color: Colors.blue.shade600,
+                                            size: 20,
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Text(
+                                            '${blockedUsers.length} blocked user${blockedUsers.length == 1 ? '' : 's'}',
+                                            style: TextStyle(
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.w600,
+                                              color: Colors.blue.shade700,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(height: 16),
+                                    // Users List
+                                    Expanded(
+                                      child: ListView.builder(
+                                        itemCount: blockedUsers.length,
+                                        itemBuilder: (context, index) {
+                                          final user = blockedUsers[index];
+                                          return AnimatedContainer(
+                                            duration: Duration(
+                                              milliseconds: 300 + (index * 100),
+                                            ),
+                                            curve: Curves.easeOutBack,
+                                            child: _buildBlockedUserCard(
+                                              user,
+                                              currentUser.userID,
+                                              () async {
+                                                // 重新获取黑名单并更新UI
+                                                List<Map<String, dynamic>> updatedList = 
+                                                    await _getBlockedUsers(currentUser.userID);
+                                                setDialogState(() {
+                                                  blockedUsers = updatedList;
+                                                });
+                                              },
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      );
+    } catch (e) {
+      print('Error showing blacklist management: $e');
+      _showErrorDialog('Error', 'Failed to load blacklist.');
+    }
+  }
+
+  Widget _buildEmptyBlacklistState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          // Enhanced illustration with multiple layers
+          Stack(
+            alignment: Alignment.center,
+            children: [
+              // Background circle with gradient
+              Container(
+                width: 120,
+                height: 120,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Colors.green.shade100,
+                      Colors.green.shade200,
+                    ],
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.green.withOpacity(0.2),
+                      blurRadius: 20,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+              ),
+              // Inner circle
+              Container(
+                width: 80,
+                height: 80,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.white,
+                  border: Border.all(
+                    color: Colors.green.shade200,
+                    width: 2,
+                  ),
+                ),
+                child: Icon(
+                  Icons.people_outline,
+                  size: 40,
+                  color: Colors.green.shade600,
+                ),
+              ),
+              // Floating elements
+              Positioned(
+                top: 10,
+                right: 15,
+                child: Container(
+                  width: 12,
+                  height: 12,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.green.shade300,
+                  ),
+                ),
+              ),
+              Positioned(
+                bottom: 15,
+                left: 10,
+                child: Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.green.shade400,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 32),
+          
+          // Enhanced title with better typography
+          const Text(
+            'No Blocked Users',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: Colors.black87,
+              letterSpacing: -0.5,
+            ),
+          ),
+          const SizedBox(height: 8),
+          
+          // Enhanced description with better styling
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Text(
+              'You haven\'t blocked anyone yet.\nGreat for building connections!',
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey.shade600,
+                height: 1.4,
+                letterSpacing: 0.1,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          const SizedBox(height: 16),
+          
+          // Positive message card
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 32),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.green.shade50,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: Colors.green.shade200,
+                width: 1,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.favorite,
+                  color: Colors.green.shade600,
+                  size: 18,
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    'Stay positive!',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.green.shade700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBlockedUserCard(Map<String, dynamic> user, String currentUserId, VoidCallback onUnblock) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: Colors.red.shade100,
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.red.withOpacity(0.08),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Colors.red.shade50,
+                Colors.red.shade50,
+              ],
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                // Top row with avatar and user info
+                Row(
+                  children: [
+                    // Enhanced Avatar with status indicator
+                    Stack(
+                      children: [
+                        Container(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: Colors.red.shade200,
+                              width: 2,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.red.withOpacity(0.2),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: CircleAvatar(
+                            radius: 20,
+                            backgroundColor: Colors.grey.shade100,
+                            backgroundImage: AssetImage(
+                              (user['Gender']?.toString().toLowerCase() == 'male') 
+                                  ? 'assets/Male.png' 
+                                  : 'assets/Female.png'
+                            ),
+                          ),
+                        ),
+                        // Blocked status indicator
+                        Positioned(
+                          bottom: 0,
+                          right: 0,
+                          child: Container(
+                            width: 16,
+                            height: 16,
+                            decoration: BoxDecoration(
+                              color: Colors.red.shade600,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.white,
+                                width: 2,
+                              ),
+                            ),
+                            child: const Icon(
+                              Icons.block,
+                              color: Colors.white,
+                              size: 10,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(width: 12),
+                    
+                    // Enhanced User Info
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Username with better typography
+                          Text(
+                            user['Username'] ?? user['BlockedUsername'] ?? 'Unknown User',
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black87,
+                              letterSpacing: -0.2,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 4),
+                          
+                          // Email with icon
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.email_outlined,
+                                size: 12,
+                                color: Colors.grey.shade500,
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  user['Email'] ?? user['BlockedEmail'] ?? 'No email',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey.shade600,
+                                    letterSpacing: 0.1,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                
+                // Bottom row with status badge and button
+                Row(
+                  children: [
+                    // Enhanced status badge
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            Colors.red.shade600,
+                            Colors.red.shade700,
+                          ],
+                        ),
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.red.withOpacity(0.3),
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.block,
+                            size: 10,
+                            color: Colors.white,
+                          ),
+                          const SizedBox(width: 3),
+                          const Text(
+                            'Blocked',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                              letterSpacing: 0.3,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    
+                    const Spacer(),
+                    
+                    // Compact Unblock Button
+                    ElevatedButton(
+                      onPressed: () => _showUnblockConfirmation(user, currentUserId, onUnblock),
+                      child: const Text(
+                        'Unblock',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.1,
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF5AA162),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        elevation: 2,
+                        minimumSize: const Size(60, 28),
+                        shadowColor: const Color(0xFF5AA162).withOpacity(0.3),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showUnblockConfirmation(Map<String, dynamic> user, String currentUserId, VoidCallback onUnblock) {
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (BuildContext context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          elevation: 16,
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(20),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                   Colors.white,
+                   Colors.green.shade50,
+                 ],
+              ),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Enhanced Header
+                Container(
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        Colors.green.shade400,
+                        Colors.green.shade600,
+                      ],
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.green.withOpacity(0.3),
+                        blurRadius: 16,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.person_add_rounded,
+                    color: Colors.white,
+                    size: 36,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                
+                // Title
+                const Text(
+                  'Unblock User',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black87,
+                    letterSpacing: -0.5,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                
+                // User info card
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: Colors.grey.shade200,
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 20,
+                        backgroundColor: Colors.grey.shade200,
+                        backgroundImage: AssetImage(
+                          (user['Gender']?.toString().toLowerCase() == 'male') 
+                              ? 'assets/Male.png' 
+                              : 'assets/Female.png'
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              user['Username'] ?? 'Unknown User',
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.black87,
+                              ),
+                            ),
+                            Text(
+                              user['Email'] ?? 'No email',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                
+                // Description
+                Text(
+                  'Are you sure you want to unblock this user?',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Colors.grey.shade700,
+                    height: 1.4,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                
+                // Permissions info
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: Colors.green.shade200,
+                      width: 1,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.check_circle_outline,
+                            color: Colors.green.shade600,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'They will be able to:',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.green.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '• Send you supervision invitations\n'
+                        '• Find you in user searches\n'
+                        '• Interact with you normally',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.green.shade600,
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                
+                // Action buttons
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: Text(
+                          'Cancel',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          Navigator.of(context).pop();
+                          await _unblockUser(currentUserId, user['UserID']);
+                          onUnblock();
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF5AA162),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          elevation: 2,
+                        ),
+                        child: const Text(
+                          'Unblock',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> _getBlockedUsers(String currentUserId) async {
+    try {
+      // 获取当前用户的黑名单记录
+      QuerySnapshot blacklistQuery = await FirebaseFirestore.instance
+          .collection('Blacklist')
+          .where('UserID', isEqualTo: currentUserId)
+          .get();
+      
+      List<Map<String, dynamic>> blockedUsers = [];
+      
+      for (var doc in blacklistQuery.docs) {
+        var blacklistData = doc.data() as Map<String, dynamic>;
+        
+        // 直接使用Blacklist中存储的用户信息
+        var userData = {
+          'UserID': blacklistData['BlockedUserID'],
+          'UserName': blacklistData['BlockedUsername'] ?? 'Unknown User',
+          'Email': blacklistData['BlockedEmail'] ?? '',
+          'BlacklistDocId': doc.id, // 保存黑名单文档ID以便删除
+          'BlockID': blacklistData['BlockID'] ?? '',
+        };
+        
+        blockedUsers.add(userData);
+      }
+      
+      return blockedUsers;
+    } catch (e) {
+      print('Error getting blocked users: $e');
+      return [];
+    }
+  }
+
+  Future<void> _unblockUser(String currentUserId, String blockedUserId) async {
+    try {
+      // 删除黑名单记录
+      QuerySnapshot blacklistQuery = await FirebaseFirestore.instance
+          .collection('Blacklist')
+          .where('UserID', isEqualTo: currentUserId)
+          .where('BlockedUserID', isEqualTo: blockedUserId)
+          .get();
+      
+      for (var doc in blacklistQuery.docs) {
+        await doc.reference.delete();
+      }
+      
+      // 显示成功消息
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('User unblocked successfully!'),
+          backgroundColor: const Color(0xFF5AA162),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+    } catch (e) {
+      print('Error unblocking user: $e');
+      _showErrorDialog('Error', 'Failed to unblock user. Please try again.');
+    }
+  }
 }
-
-
-
-
 
 
 

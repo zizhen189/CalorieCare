@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:caloriecare/user_model.dart';
 import 'package:caloriecare/session_service.dart';
 import 'package:caloriecare/calorie_adjustment_service.dart';
+import 'package:caloriecare/refresh_manager.dart';
 
 class EditProfilePage extends StatefulWidget {
   final UserModel user;
@@ -300,6 +301,8 @@ class _EditProfilePageState extends State<EditProfilePage> {
             TextButton(
               onPressed: () {
                 Navigator.of(context).pop(); // Close dialog
+                // 触发全局刷新
+                RefreshManagerHelper.refreshAfterEditProfile();
                 Navigator.of(context).pop(true); // Return to profile with success flag
               },
               child: const Text('OK'),
@@ -406,10 +409,18 @@ class _EditProfilePageState extends State<EditProfilePage> {
                   if (value == null || value.isEmpty) {
                     return 'Please enter your target weight';
                   }
-                  final weight = double.tryParse(value);
-                  if (weight == null || weight < 30 || weight > 300) {
+                  final targetWeight = double.tryParse(value);
+                  if (targetWeight == null || targetWeight < 30 || targetWeight > 300) {
                     return 'Please enter a valid weight (30-300 kg)';
                   }
+                  
+                  // Goal-specific validation
+                  if (_selectedGoal == 'loss' && targetWeight >= widget.user.weight) {
+                    return 'Weight loss target must be less than current weight (${widget.user.weight}kg)';
+                  } else if (_selectedGoal == 'gain' && targetWeight <= widget.user.weight) {
+                    return 'Weight gain target must be greater than current weight (${widget.user.weight}kg)';
+                  }
+                  
                   return null;
                 },
               ),
@@ -419,7 +430,11 @@ class _EditProfilePageState extends State<EditProfilePage> {
                 value: _selectedGoal,
                 label: 'Goal',
                 items: _goals,
-                onChanged: (value) => setState(() => _selectedGoal = value),
+                onChanged: (value) {
+                  setState(() => _selectedGoal = value);
+                  // Trigger validation for target weight when goal changes
+                  _formKey.currentState?.validate();
+                },
               ),
               const SizedBox(height: 40),
               

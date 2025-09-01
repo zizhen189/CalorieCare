@@ -2,6 +2,8 @@ import 'package:caloriecare/user_model.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:caloriecare/invitation_notification_service.dart';
+import 'package:caloriecare/fcm_invitation_service.dart';
+import 'package:caloriecare/global_notification_manager.dart';
 
 class InviteSupervisorPage extends StatefulWidget {
   final UserModel currentUser;
@@ -17,6 +19,7 @@ class _InviteSupervisorPageState extends State<InviteSupervisorPage> {
   List<UserModel> _searchResults = [];
   bool _isLoading = false;
   String _searchQuery = '';
+  final GlobalNotificationManager _globalNotificationManager = GlobalNotificationManager();
   final InvitationNotificationService _invitationService = InvitationNotificationService();
 
   Future<void> _searchUsers(String query) async {
@@ -85,6 +88,47 @@ class _InviteSupervisorPageState extends State<InviteSupervisorPage> {
           .get();
       print('Email lowercase search results: ${emailLowerSnapshot.docs.length}'); // Debug print
 
+      // Get current user's blacklist
+      final blacklistQuery = await FirebaseFirestore.instance
+          .collection('Blacklist')
+          .where('UserID', isEqualTo: widget.currentUser.userID)
+          .get();
+      
+      final blockedUserIds = blacklistQuery.docs
+          .map((doc) => doc['BlockedUserID'] as String)
+          .toSet();
+      print('Blocked users: $blockedUserIds'); // Debug print
+
+      // Get current user's existing supervision relationships
+      final supervisionQuery = await FirebaseFirestore.instance
+          .collection('SupervisionList')
+          .where('UserID', isEqualTo: widget.currentUser.userID)
+          .get();
+      
+      final supervisionIds = supervisionQuery.docs
+          .map((doc) => doc['SupervisionID'] as String)
+          .toSet();
+      print('Supervision IDs: $supervisionIds'); // Debug print
+
+      // Get all users involved in these supervision relationships
+      final Set<String> supervisionUserIds = <String>{};
+      if (supervisionIds.isNotEmpty) {
+        for (String supervisionId in supervisionIds) {
+          final supervisionDetailsQuery = await FirebaseFirestore.instance
+              .collection('SupervisionList')
+              .where('SupervisionID', isEqualTo: supervisionId)
+              .get();
+          
+          for (var doc in supervisionDetailsQuery.docs) {
+            final userId = doc['UserID'] as String;
+            if (userId != widget.currentUser.userID) {
+              supervisionUserIds.add(userId);
+            }
+          }
+        }
+      }
+      print('Users with existing supervision relationships: $supervisionUserIds'); // Debug print
+
       final Map<String, UserModel> usersMap = {};
       
       // Process all search results
@@ -94,9 +138,19 @@ class _InviteSupervisorPageState extends State<InviteSupervisorPage> {
             final data = doc.data() as Map<String, dynamic>;
             print('Processing user data: $data'); // Debug print
             final user = UserModel.fromMap(data);
-            if (user.userID != widget.currentUser.userID) {
+            
+            // Filter out: current user, blocked users, and users with existing supervision relationships
+            if (user.userID != widget.currentUser.userID && 
+                !blockedUserIds.contains(user.userID) && 
+                !supervisionUserIds.contains(user.userID)) {
               usersMap[user.userID] = user;
               print('Added user to results: ${user.username}'); // Debug print
+            } else {
+              if (blockedUserIds.contains(user.userID)) {
+                print('Skipped blocked user: ${user.username}'); // Debug print
+              } else if (supervisionUserIds.contains(user.userID)) {
+                print('Skipped user with existing supervision relationship: ${user.username}'); // Debug print
+              }
             }
           } catch (e) {
             print("Error processing search result: $e");
@@ -126,6 +180,22 @@ class _InviteSupervisorPageState extends State<InviteSupervisorPage> {
     final currentUser = widget.currentUser;
 
     try {
+      // 0. Check if current user is blacklisted by the invited user
+      final blacklistQuery = await db
+          .collection('Blacklist')
+          .where('UserID', isEqualTo: invitedUser.userID)
+          .where('BlockedUserID', isEqualTo: currentUser.userID)
+          .get();
+      
+      if (blacklistQuery.docs.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('You cannot send invitations to ${invitedUser.username}. You have been blocked.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
       // 1. Check if a supervision already exists between the two users
       final existingSupervisionQuery = await db
           .collection('SupervisionList')
@@ -141,26 +211,51 @@ class _InviteSupervisorPageState extends State<InviteSupervisorPage> {
             .get();
 
         if (checkPartnerQuery.docs.isNotEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('You already have a supervision relationship with ${invitedUser.username}.')),
-          );
-          return;
-        }
-      }
-
-      // 2. Check if there's already a pending invitation between these users
-      if (supervisionIds.isNotEmpty) {
-        final pendingSupervisionQuery = await db
-            .collection('Supervision')
-            .where('SupervisionID', whereIn: supervisionIds)
-            .where('Status', isEqualTo: 'pending')
-            .get();
-
-        if (pendingSupervisionQuery.docs.isNotEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('You already have a pending invitation with ${invitedUser.username}.')),
-          );
-          return;
+          // Get the supervision IDs that involve both users
+          final bothUsersSupervisionIds = checkPartnerQuery.docs.map((doc) => doc['SupervisionID'] as String).toList();
+          
+          // Check the status of these supervisions
+          final supervisionStatusQuery = await db
+              .collection('Supervision')
+              .where('SupervisionID', whereIn: bothUsersSupervisionIds)
+              .get();
+          
+          for (var supervisionDoc in supervisionStatusQuery.docs) {
+            final status = supervisionDoc['Status'];
+            
+            if (status == 'accepted') {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('You already have an active supervision relationship with ${invitedUser.username}.')),
+              );
+              return;
+            } else if (status == 'pending') {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('You already have a pending invitation with ${invitedUser.username}.')),
+              );
+              return;
+            } else if (status == 'declined') {
+              // Remove the declined supervision records to allow new invitation
+              print('Removing declined supervision records for reinvitation...');
+              
+              // Delete the supervision record
+              await supervisionDoc.reference.delete();
+              
+              // Delete the supervision list records
+              final supervisionListToDelete = await db
+                  .collection('SupervisionList')
+                  .where('SupervisionID', isEqualTo: supervisionDoc['SupervisionID'])
+                  .get();
+              
+              WriteBatch deleteBatch = db.batch();
+              for (var doc in supervisionListToDelete.docs) {
+                deleteBatch.delete(doc.reference);
+              }
+              await deleteBatch.commit();
+              
+              print('Declined supervision records cleaned up. Proceeding with new invitation...');
+              break; // Continue with creating new invitation
+            }
+          }
         }
       }
       
@@ -185,7 +280,6 @@ class _InviteSupervisorPageState extends State<InviteSupervisorPage> {
         'CurrentStreakDays': 0,
         'LastLoggedDate': null,
         'Status': 'pending',
-        'CreatedAt': FieldValue.serverTimestamp(),
       });
 
       // 5. Create two entries in SupervisionList (simplified)
@@ -207,18 +301,24 @@ class _InviteSupervisorPageState extends State<InviteSupervisorPage> {
 
       await batch.commit();
 
-      // 发送邀请通知到RTDB
-      print('=== SENDING INVITATION ===');
+      // 使用全局通知管理器发送邀请通知
+      print('=== SENDING INVITATION VIA GLOBAL MANAGER ===');
       print('From: ${currentUser.username} (${currentUser.userID})');
       print('To: ${invitedUser.username} (${invitedUser.userID})');
       print('SupervisionID: $newSupervisionId');
-      print('RTDB Path: invitations/${invitedUser.userID}');
       
-      await _invitationService.sendInvitationNotification(
+      // 发送RTDB邀请通知（可靠性最高）
+      await _globalNotificationManager.sendRTDBNotification(
         receiverId: invitedUser.userID,
-        inviterId: currentUser.userID,
-        inviterName: currentUser.username,
-        supervisionId: newSupervisionId,
+        type: 'invitation',
+        data: {
+          'title': 'Supervisor Invitation',
+          'message': '${currentUser.username} invites you to become mutual supervisors',
+          'inviterId': currentUser.userID,
+          'inviterName': currentUser.username,
+          'supervisionId': newSupervisionId,
+          'timestamp': DateTime.now().toIso8601String(),
+        },
       );
       
       print('=== INVITATION SENT SUCCESSFULLY ===');
@@ -232,6 +332,243 @@ class _InviteSupervisorPageState extends State<InviteSupervisorPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error sending invitation: $e')),
       );
+    }
+  }
+  
+  void _showBlacklistDialog(UserModel userToBlock) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Row(
+            children: [
+              Icon(Icons.block, color: Colors.red.shade600),
+              const SizedBox(width: 8),
+              const Text('Block User'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Are you sure you want to block ${userToBlock.username}?'),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.orange.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.orange.shade200),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.warning, color: Colors.orange.shade700, size: 16),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            'What happens when you block:',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.orange.shade700,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '• They cannot send you supervision invitations\n'
+                      '• You will not see them in search results\n'
+                      '• Any existing supervision will be terminated',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.orange.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                await _blockUser(userToBlock);
+                Navigator.of(context).pop();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Block'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+  
+  Future<String> _generateBlockID() async {
+    final db = FirebaseFirestore.instance;
+    try {
+      QuerySnapshot snapshot = await db
+          .collection('Blacklist')
+          .get();
+
+      if (snapshot.docs.isEmpty) {
+        return 'B00001';
+      }
+
+      // 在内存中排序，找到最大的BlockID
+      final blockIds = snapshot.docs
+          .map((doc) {
+            final data = doc.data();
+            if (data != null && data is Map<String, dynamic>) {
+              return data['BlockID'] as String?;
+            }
+            return null;
+          })
+          .where((id) => id != null)
+          .cast<String>()
+          .toList();
+      
+      if (blockIds.isEmpty) {
+        return 'B00001';
+      }
+      
+      blockIds.sort((a, b) => b.compareTo(a)); // 降序
+      String lastBlockID = blockIds.first;
+      int lastNumber = int.parse(lastBlockID.substring(1));
+      int newNumber = lastNumber + 1;
+      return 'B${newNumber.toString().padLeft(5, '0')}';
+    } catch (e) {
+      print('Error generating block ID: $e');
+      return 'B00001';
+    }
+  }
+
+  Future<void> _blockUser(UserModel userToBlock) async {
+    final db = FirebaseFirestore.instance;
+    final currentUser = widget.currentUser;
+    
+    try {
+      // Check if already blocked
+      final existingBlockQuery = await db
+          .collection('Blacklist')
+          .where('UserID', isEqualTo: currentUser.userID)
+          .where('BlockedUserID', isEqualTo: userToBlock.userID)
+          .get();
+      
+      if (existingBlockQuery.docs.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${userToBlock.username} is already blocked.')),
+        );
+        return;
+      }
+      
+      // Generate BlockID
+      final blockId = await _generateBlockID();
+      
+      // Add to blacklist
+      await db.collection('Blacklist').add({
+        'BlockID': blockId,
+        'UserID': currentUser.userID,
+        'BlockedUserID': userToBlock.userID,
+        'BlockedUsername': userToBlock.username,
+        'BlockedEmail': userToBlock.email,
+      });
+      
+      // Remove any existing supervision relationships
+      await _terminateSupervisionRelationship(currentUser.userID, userToBlock.userID);
+      
+      // Remove from search results
+      setState(() {
+        _searchResults.removeWhere((user) => user.userID == userToBlock.userID);
+      });
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${userToBlock.username} has been blocked.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } catch (e) {
+      print('Error blocking user: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error blocking user: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+  
+  Future<void> _terminateSupervisionRelationship(String userId1, String userId2) async {
+    final db = FirebaseFirestore.instance;
+    
+    try {
+      // Find all supervision IDs involving both users
+      final user1SupervisionQuery = await db
+          .collection('SupervisionList')
+          .where('UserID', isEqualTo: userId1)
+          .get();
+      
+      final user1SupervisionIds = user1SupervisionQuery.docs
+          .map((doc) => doc['SupervisionID'] as String)
+          .toList();
+      
+      if (user1SupervisionIds.isNotEmpty) {
+        final user2SupervisionQuery = await db
+            .collection('SupervisionList')
+            .where('SupervisionID', whereIn: user1SupervisionIds)
+            .where('UserID', isEqualTo: userId2)
+            .get();
+        
+        final sharedSupervisionIds = user2SupervisionQuery.docs
+            .map((doc) => doc['SupervisionID'] as String)
+            .toList();
+        
+        if (sharedSupervisionIds.isNotEmpty) {
+          // Delete supervision records
+          for (String supervisionId in sharedSupervisionIds) {
+            final supervisionQuery = await db
+                .collection('Supervision')
+                .where('SupervisionID', isEqualTo: supervisionId)
+                .get();
+            
+            WriteBatch batch = db.batch();
+            
+            // Delete supervision record
+            for (var doc in supervisionQuery.docs) {
+              batch.delete(doc.reference);
+            }
+            
+            // Delete supervision list records
+            final supervisionListQuery = await db
+                .collection('SupervisionList')
+                .where('SupervisionID', isEqualTo: supervisionId)
+                .get();
+            
+            for (var doc in supervisionListQuery.docs) {
+              batch.delete(doc.reference);
+            }
+            
+            await batch.commit();
+          }
+          
+          print('Terminated supervision relationships: $sharedSupervisionIds');
+        }
+      }
+    } catch (e) {
+      print('Error terminating supervision relationship: $e');
     }
   }
 
@@ -696,58 +1033,90 @@ class _InviteSupervisorPageState extends State<InviteSupervisorPage> {
                 
                 const SizedBox(width: 8), // Reduced from 12
                 
-                // Smaller invite button
-                Container(
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        Color(0xFF5AA162),
-                        Color(0xFF7BB77E),
-                      ],
-                    ),
-                    borderRadius: BorderRadius.circular(12), // Reduced from 14
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFF5AA162).withOpacity(0.3), // Reduced opacity
-                        blurRadius: 8, // Reduced from 12
-                        offset: const Offset(0, 2), // Reduced from 4
+                // Action buttons
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Blacklist button
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.grey.shade300),
                       ),
-                    ],
-                  ),
-                  child: Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: () => _sendInvitation(user),
-                      borderRadius: BorderRadius.circular(12), // Reduced from 14
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16, // Reduced from 20
-                          vertical: 10, // Reduced from 12
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () => _showBlacklistDialog(user),
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.all(8),
+                            child: Icon(
+                              Icons.block,
+                              color: Colors.grey.shade600,
+                              size: 16,
+                            ),
+                          ),
                         ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(
-                              Icons.person_add_rounded,
-                              color: Colors.white,
-                              size: 16, // Reduced from 18
-                            ),
-                            const SizedBox(width: 4), // Reduced from 6
-                            const Text(
-                              'Invite',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 14, // Reduced from 16
-                              ),
-                            ),
+                      ),
+                    ),
+                    
+                    const SizedBox(width: 8),
+                    
+                    // Invite button
+                    Container(
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            Color(0xFF5AA162),
+                            Color(0xFF7BB77E),
                           ],
                         ),
+                        borderRadius: BorderRadius.circular(12), // Reduced from 14
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF5AA162).withOpacity(0.3), // Reduced opacity
+                            blurRadius: 8, // Reduced from 12
+                            offset: const Offset(0, 2), // Reduced from 4
+                          ),
+                        ],
+                      ),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () => _sendInvitation(user),
+                          borderRadius: BorderRadius.circular(12), // Reduced from 14
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16, // Reduced from 20
+                              vertical: 10, // Reduced from 12
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.person_add_rounded,
+                                  color: Colors.white,
+                                  size: 16, // Reduced from 18
+                                ),
+                                const SizedBox(width: 4), // Reduced from 6
+                                const Text(
+                                  'Invite',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14, // Reduced from 16
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                       ),
                     ),
-                  ),
+                  ],
                 ),
               ],
             ),
@@ -756,7 +1125,7 @@ class _InviteSupervisorPageState extends State<InviteSupervisorPage> {
       },
     );
   }
-} 
+}
 
 
 

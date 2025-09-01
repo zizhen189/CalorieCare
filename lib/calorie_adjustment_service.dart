@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'dart:math';
+import 'refresh_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class CalorieAdjustmentService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -153,34 +155,9 @@ class CalorieAdjustmentService {
     return intakeHistory.reversed.toList(); // 最新的在前
   }
 
-  /// 获取用户当前的目标卡路里
-  Future<double> _getCurrentTargetCalories(String userId) async {
-    // 首先检查是否有最新的调整记录
-    final adjustmentQuery = await _firestore
-        .collection('CalorieAdjustment')
-        .where('UserID', isEqualTo: userId)
-        .get();
-    
-    if (adjustmentQuery.docs.isNotEmpty) {
-      // 在内存中排序，找到最新的调整
-      final adjustments = adjustmentQuery.docs
-          .map((doc) => doc.data())
-          .where((data) => data != null)
-          .cast<Map<String, dynamic>>()
-          .toList();
-      
-      if (adjustments.isNotEmpty) {
-        adjustments.sort((a, b) {
-          final dateA = a['AdjustDate'] ?? '';
-          final dateB = b['AdjustDate'] ?? '';
-          return dateB.compareTo(dateA); // 降序
-        });
-        
-        return (adjustments.first['AdjustTargetCalories']).toDouble();
-      }
-    }
-    
-    // 如果没有调整记录，从Target表获取
+  /// 获取用户的原始基准目标卡路里（用于每日调整计算）
+  Future<double> _getBaseTargetCalories(String userId) async {
+    // 总是从Target表获取原始目标，不使用调整后的值
     final targetQuery = await _firestore
         .collection('Target')
         .where('UserID', isEqualTo: userId)
@@ -194,6 +171,48 @@ class CalorieAdjustmentService {
     }
     
     return 2000.0; // 默认值
+  }
+
+  /// 获取用户当前生效的目标卡路里（显示用）
+  Future<double> _getCurrentTargetCalories(String userId) async {
+    // 首先检查今天是否有调整记录
+    final today = DateTime.now();
+    final todayStr = today.toIso8601String().split('T')[0];
+    
+    final todayAdjustmentQuery = await _firestore
+        .collection('CalorieAdjustment')
+        .where('UserID', isEqualTo: userId)
+        .where('AdjustDate', isEqualTo: todayStr)
+        .get();
+    
+    if (todayAdjustmentQuery.docs.isNotEmpty) {
+      // 使用今天的调整目标
+      final data = todayAdjustmentQuery.docs.first.data();
+      print('Using today\'s adjustment: ${data['AdjustTargetCalories']}');
+      return (data['AdjustTargetCalories']).toDouble();
+    }
+    
+    // 如果今天没有调整，检查昨天是否有调整记录
+    final yesterday = today.subtract(Duration(days: 1));
+    final yesterdayStr = yesterday.toIso8601String().split('T')[0];
+    
+    final yesterdayAdjustmentQuery = await _firestore
+        .collection('CalorieAdjustment')
+        .where('UserID', isEqualTo: userId)
+        .where('AdjustDate', isEqualTo: yesterdayStr)
+        .get();
+    
+    if (yesterdayAdjustmentQuery.docs.isNotEmpty) {
+      // 使用昨天的调整目标
+      final data = yesterdayAdjustmentQuery.docs.first.data();
+      print('Using yesterday\'s adjustment: ${data['AdjustTargetCalories']}');
+      return (data['AdjustTargetCalories']).toDouble();
+    }
+    
+    // 如果都没有调整，使用原始目标
+    final baseTarget = await _getBaseTargetCalories(userId);
+    print('Using base target: $baseTarget');
+    return baseTarget;
   }
 
   /// 每日调整算法 - 添加重复检查
@@ -233,52 +252,68 @@ class CalorieAdjustmentService {
       }
       
       final yesterdayIntake = intakeHistory.first['totalCalories'] as int;
-      final currentTarget = await _getCurrentTargetCalories(userId);
+      final baseTarget = await _getBaseTargetCalories(userId); // 使用原始基准目标
+      final currentDisplayTarget = await _getCurrentTargetCalories(userId); // 当前显示的目标
       final bmr = _calculateBMR(userData);
       final tdee = _calculateTDEE(userData);
       final goal = userData['Goal'] ?? 'maintain';
       final gender = userData['Gender'] ?? 'male';
       
-      // 检查是否需要调整（基于目标类型）
-      bool shouldAdjust = _shouldAdjustBasedOnGoal(goal, yesterdayIntake, currentTarget);
+      // 检查是否需要调整（基于目标类型，使用原始目标）
+      bool shouldAdjust = _shouldAdjustBasedOnGoal(goal, yesterdayIntake, baseTarget);
       
       if (!shouldAdjust) {
         return {
           'success': false,
           'reason': 'No adjustment needed based on goal type and intake pattern',
-          'currentTarget': currentTarget,
+          'currentTarget': currentDisplayTarget,
+          'baseTarget': baseTarget,
         };
       }
       
-      // 计算新目标：直接减法方法
-      double deviation = yesterdayIntake - currentTarget;
-      double newTarget = currentTarget - deviation;
+      // 计算新目标：基于原始目标和昨天摄入量的差值
+      double deviation = yesterdayIntake - baseTarget;
+      double newTarget = baseTarget - deviation;
+      
+      print('=== Daily Adjustment Calculation ===');
+      print('Base target (original): $baseTarget');
+      print('Current display target: $currentDisplayTarget');
+      print('Yesterday intake: $yesterdayIntake');
+      print('Deviation from base: $deviation');
+      print('New calculated target: $newTarget');
       
       // 应用基于目标的安全边界
       newTarget = _applySafetyBoundaries(newTarget, goal, bmr, tdee, gender);
       
       // 如果调整幅度太小，不进行调整
-      if ((newTarget - currentTarget).abs() < 25) {
+      if ((newTarget - baseTarget).abs() < 25) {
         return {
           'success': false,
           'reason': 'Adjustment too small',
-          'currentTarget': currentTarget,
+          'currentTarget': currentDisplayTarget,
+          'baseTarget': baseTarget,
         };
       }
       
       // 创建调整记录
       await _createAdjustmentRecord(
         userId: userId,
-        previousTarget: currentTarget,
+        previousTarget: baseTarget, // 记录原始基准目标
         newTarget: newTarget,
       );
       
+      print('=== Daily Adjustment Complete ===');
+      print('Saved to database: base=$baseTarget -> new=$newTarget');
+      
+      // 立即触发页面刷新，确保首页显示调整后的目标
+      RefreshManagerHelper.refreshAfterDailyAdjustment();
+      
       return {
         'success': true,
-        'previousTarget': currentTarget,
+        'previousTarget': baseTarget, // 返回原始基准目标
         'newTarget': newTarget,
-        'adjustment': newTarget - currentTarget,
-        'reason': 'Daily direct subtraction adjustment based on yesterday\'s intake',
+        'adjustment': newTarget - baseTarget, // 基于原始目标的调整量
+        'reason': 'Daily adjustment based on yesterday\'s intake vs original target',
       };
       
     } catch (e) {
@@ -350,7 +385,6 @@ class CalorieAdjustmentService {
       'AdjustDate': _getTodayDate(),
       'PreviousTargetCalories': previousTarget.round(),
       'AdjustTargetCalories': newTarget.round(),
-      'CreatedAt': FieldValue.serverTimestamp(),
     });
   }
 
@@ -490,20 +524,21 @@ class CalorieAdjustmentService {
   /// 检查用户是否启用了自动调整
   Future<bool> isAutoAdjustmentEnabled(String userId) async {
     try {
-      // 这里可以从用户设置或偏好中读取
-      // 暂时返回true，后续可以连接到用户设置
-      return true;
+      final prefs = await SharedPreferences.getInstance();
+      final key = 'auto_adjustment_enabled_$userId';
+      return prefs.getBool(key) ?? true; // 默认启用
     } catch (e) {
       print('Error checking auto adjustment setting: $e');
-      return false;
+      return true; // 错误时默认启用
     }
   }
 
   /// 保存自动调整设置
   Future<void> setAutoAdjustmentEnabled(String userId, bool enabled) async {
     try {
-      // 这里可以保存到用户设置或偏好中
-      // 暂时只是打印，后续可以连接到用户设置
+      final prefs = await SharedPreferences.getInstance();
+      final key = 'auto_adjustment_enabled_$userId';
+      await prefs.setBool(key, enabled);
       print('Auto adjustment ${enabled ? 'enabled' : 'disabled'} for user $userId');
     } catch (e) {
       print('Error saving auto adjustment setting: $e');
@@ -528,6 +563,171 @@ class CalorieAdjustmentService {
     }
   }
 
+  /// 检查用户在指定日期是否已经进行过调整
+  Future<bool> hasAdjustedOnDate(String userId, String date) async {
+    try {
+      final query = await _firestore
+          .collection('CalorieAdjustment')
+          .where('UserID', isEqualTo: userId)
+          .where('AdjustDate', isEqualTo: date)
+          .get();
+      
+      return query.docs.isNotEmpty;
+    } catch (e) {
+      print('Error checking adjustment for $date: $e');
+      return false;
+    }
+  }
+
+  /// 为指定日期执行调整（用于补偿错过的调整）
+  Future<Map<String, dynamic>> performDailyAdjustmentForDate(String userId, String date) async {
+    try {
+      print('=== Performing adjustment for date: $date ===');
+      
+      // 检查指定日期是否已经调整过
+      final hasAdjusted = await hasAdjustedOnDate(userId, date);
+      if (hasAdjusted) {
+        return {
+          'success': false,
+          'reason': 'Already adjusted for $date',
+        };
+      }
+
+      // 获取用户数据
+      final userQuery = await _firestore
+          .collection('User')
+          .where('UserID', isEqualTo: userId)
+          .get();
+      
+      if (userQuery.docs.isEmpty) {
+        throw Exception('User not found');
+      }
+      
+      final userData = userQuery.docs.first.data();
+      if (userData == null || userData is! Map<String, dynamic>) {
+        throw Exception('User data is not in expected format');
+      }
+      
+      // 获取指定日期前一天的摄入量
+      final targetDate = DateTime.parse(date);
+      final dayBefore = targetDate.subtract(Duration(days: 1));
+      final dayBeforeStr = dayBefore.toIso8601String().split('T')[0];
+      
+      final intakeHistory = await _getUserIntakeHistoryForDate(userId, dayBeforeStr);
+      if (intakeHistory.isEmpty || !intakeHistory.first['logged']) {
+        return {
+          'success': false,
+          'reason': 'No intake data available for $dayBeforeStr',
+        };
+      }
+      
+      final intakeAmount = intakeHistory.first['totalCalories'] as int;
+      final baseTarget = await _getBaseTargetCalories(userId);
+      final bmr = _calculateBMR(userData);
+      final tdee = _calculateTDEE(userData);
+      final goal = userData['Goal'] ?? 'maintain';
+      final gender = userData['Gender'] ?? 'male';
+      
+      // 检查是否需要调整
+      bool shouldAdjust = _shouldAdjustBasedOnGoal(goal, intakeAmount, baseTarget);
+      
+      if (!shouldAdjust) {
+        return {
+          'success': false,
+          'reason': 'No adjustment needed for $date',
+        };
+      }
+      
+      // 计算新目标
+      double deviation = intakeAmount - baseTarget;
+      double newTarget = baseTarget - deviation;
+      
+      // 应用安全边界
+      newTarget = _applySafetyBoundaries(newTarget, goal, bmr, tdee, gender);
+      
+      // 检查调整幅度
+      if ((newTarget - baseTarget).abs() < 25) {
+        return {
+          'success': false,
+          'reason': 'Adjustment too small for $date',
+        };
+      }
+      
+      // 创建指定日期的调整记录
+      await _createAdjustmentRecordForDate(
+        userId: userId,
+        previousTarget: baseTarget,
+        newTarget: newTarget,
+        date: date,
+      );
+      
+      print('=== Adjustment completed for $date ===');
+      
+      return {
+        'success': true,
+        'previousTarget': baseTarget,
+        'newTarget': newTarget,
+        'adjustment': newTarget - baseTarget,
+        'reason': 'Retroactive adjustment for $date',
+        'date': date,
+      };
+      
+    } catch (e) {
+      print('Error in adjustment for $date: $e');
+      return {
+        'success': false,
+        'reason': 'Error: $e',
+      };
+    }
+  }
+
+  /// 获取指定日期的摄入量数据
+  Future<List<Map<String, dynamic>>> _getUserIntakeHistoryForDate(String userId, String date) async {
+    final query = await _firestore
+        .collection('FoodLog')
+        .where('UserID', isEqualTo: userId)
+        .where('Date', isEqualTo: date)
+        .get();
+    
+    if (query.docs.isEmpty) {
+      return [{
+        'date': date,
+        'totalCalories': 0,
+        'logged': false,
+      }];
+    }
+    
+    int totalCalories = 0;
+    for (var doc in query.docs) {
+      final data = doc.data();
+      if (data != null && data is Map<String, dynamic>) {
+        totalCalories += ((data['Calories'] as num?) ?? 0).toInt();
+      }
+    }
+    
+    return [{
+      'date': date,
+      'totalCalories': totalCalories,
+      'logged': totalCalories > 0,
+    }];
+  }
+
+  /// 为指定日期创建调整记录
+  Future<void> _createAdjustmentRecordForDate({
+    required String userId,
+    required double previousTarget,
+    required double newTarget,
+    required String date,
+  }) async {
+    await _firestore.collection('CalorieAdjustment').add({
+      'UserID': userId,
+      'PreviousTargetCalories': previousTarget,
+      'AdjustTargetCalories': newTarget,
+      'AdjustDate': date,
+    });
+    
+    print('Created adjustment record for $date: $previousTarget -> $newTarget');
+  }
 
 } 
 

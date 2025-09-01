@@ -194,7 +194,6 @@ class GoalAchievementService {
         'TargetDuration': 0,
         'TargetCalories': tdee.round(),
         'EstimatedTargetDate': null,
-        'CreatedAt': FieldValue.serverTimestamp(),
       });
     }
   }

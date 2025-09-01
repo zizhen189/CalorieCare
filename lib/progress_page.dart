@@ -9,6 +9,7 @@ import 'package:caloriecare/profile_page.dart';
 import 'package:caloriecare/session_service.dart';
 import 'goal_achievement_page.dart';
 import 'package:caloriecare/goal_achievement_service.dart';
+import 'package:caloriecare/refresh_manager.dart';
 
 class ProgressPage extends StatefulWidget {
   final UserModel? user;
@@ -40,9 +41,15 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
   DateTime? _weightChartStartDate;
   DateTime? _weightChartEndDate;
   
-  // Timeline filter variables
+  // Timeline filter variables (synchronized with weight period)
   String _selectedTimelineFilter = 'Last 7 days';
-  List<String> _timelineFilters = ['Last 7 days', 'Last 30 days', 'Last 3 months', 'All records'];
+  List<String> _timelineFilters = ['Last 7 days', 'Last 30 days', 'Last 2 months', 'Last 3 months', 'Last 6 months', 'All records'];
+  
+  // Weight record search and filter variables
+  final TextEditingController _weightSearchController = TextEditingController();
+  List<Map<String, dynamic>> _filteredWeightData = [];
+  DateTime? _searchStartDate;
+  DateTime? _searchEndDate;
 
   @override
   void initState() {
@@ -59,6 +66,7 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
   void dispose() {
     _tabController.dispose();
     _scrollController.dispose();
+    _weightSearchController.dispose();
     super.dispose();
   }
 
@@ -274,10 +282,16 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
         filterStartDate = now.subtract(const Duration(days: 6));
         break;
       case 'Last 30 days':
-        filterStartDate = now.subtract(const Duration(days: 29));
+        filterStartDate = DateTime(now.year, now.month - 1, now.day);
+        break;
+      case 'Last 2 months':
+        filterStartDate = DateTime(now.year, now.month - 2, now.day);
         break;
       case 'Last 3 months':
         filterStartDate = DateTime(now.year, now.month - 3, now.day);
+        break;
+      case 'Last 6 months':
+        filterStartDate = DateTime(now.year, now.month - 6, now.day);
         break;
       case 'All records':
         setState(() {
@@ -303,6 +317,7 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
     
     setState(() {
       _weightData = timelineFilteredRecords;
+      _filteredWeightData = List.from(_weightData); // 初始化过滤数据
     });
   }
 
@@ -1079,17 +1094,18 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
                   ),
                 ),
                 const SizedBox(height: 20),
-                const Text(
-                  'No weight data available',
-                  style: TextStyle(
-                    fontSize: 20,
+                Text(
+                  'No weight data available for ${_getPeriodDisplayName(_selectedWeightPeriod).toLowerCase()}',
+                  style: const TextStyle(
+                    fontSize: 18,
                     fontWeight: FontWeight.w700,
                     color: Colors.black87,
                   ),
+                  textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Start tracking your weight progress',
+                  'Start tracking your weight progress or try selecting a different time period',
                   style: TextStyle(
                     fontSize: 14,
                     color: Colors.grey.shade600,
@@ -1206,6 +1222,8 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
                         onTap: () {
                           setState(() {
                             _selectedWeightPeriod = period;
+                            // 同步时间过滤器
+                            _selectedTimelineFilter = _getCorrespondingTimelineFilter(period);
                           });
                           _loadWeightData();
                         },
@@ -1441,8 +1459,10 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
                           if (newValue != null) {
                             setState(() {
                               _selectedTimelineFilter = newValue;
+                              // 同步图表时间段
+                              _selectedWeightPeriod = _getCorrespondingWeightPeriod(newValue);
                             });
-                            _applyTimelineFilter();
+                            _loadWeightData(); // 重新加载数据以同步图表
                           }
                         },
                         underline: Container(),
@@ -1468,8 +1488,160 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
                 ),
                 const SizedBox(height: 16),
                 
+                // Search and Filter Bar
+                Row(
+                  children: [
+                    Expanded(
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.grey.shade200),
+                        ),
+                        child: TextField(
+                          controller: _weightSearchController,
+                          onChanged: (value) => _filterWeightRecords(),
+                          decoration: InputDecoration(
+                            hintText: 'Search by date or weight...',
+                            hintStyle: TextStyle(color: Colors.grey.shade600),
+                            prefixIcon: Icon(Icons.search, color: Colors.grey.shade600),
+                            border: InputBorder.none,
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: (_searchStartDate != null || _searchEndDate != null)
+                            ? const Color(0xFF5AA162)
+                            : Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: (_searchStartDate != null || _searchEndDate != null)
+                              ? const Color(0xFF5AA162)
+                              : Colors.grey.shade300,
+                        ),
+                      ),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: _showDateRangeFilter,
+                          borderRadius: BorderRadius.circular(12),
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            child: Icon(
+                              Icons.date_range,
+                              color: (_searchStartDate != null || _searchEndDate != null)
+                                  ? Colors.white
+                                  : Colors.grey.shade600,
+                              size: 20,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    if (_weightSearchController.text.isNotEmpty || _searchStartDate != null || _searchEndDate != null)
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: _clearSearchFilters,
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              padding: const EdgeInsets.all(12),
+                              child: Icon(
+                                Icons.clear,
+                                color: Colors.grey.shade600,
+                                size: 20,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                
                 // Enhanced weight entries
-                ..._weightData.map((record) {
+                if (_filteredWeightData.isEmpty && _weightData.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade50,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey.shade200),
+                    ),
+                    child: Column(
+                      children: [
+                        Icon(
+                          Icons.search_off,
+                          color: Colors.grey.shade400,
+                          size: 48,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'No records match your search',
+                          style: TextStyle(
+                            color: Colors.grey.shade600,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Try adjusting your search terms or date range',
+                          style: TextStyle(
+                            color: Colors.grey.shade500,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                
+                if (_filteredWeightData.isEmpty && _weightData.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade50,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey.shade200),
+                    ),
+                    child: Column(
+                      children: [
+                        Icon(
+                          Icons.monitor_weight_outlined,
+                          color: Colors.grey.shade400,
+                          size: 48,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'No weight records found',
+                          style: TextStyle(
+                            color: Colors.grey.shade600,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Start tracking your weight to see records here',
+                          style: TextStyle(
+                            color: Colors.grey.shade500,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                
+                ..._filteredWeightData.map((record) {
                   final date = DateFormat('dd/MM/yyyy').format(
                     DateFormat('yyyy-MM-dd').parse(record['date'])
                   );
@@ -1632,7 +1804,11 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
   }
   
   double _getMinWeight() {
-    if (_weightData.isEmpty) return 50.0; // 默认最小值
+    if (_weightData.isEmpty) {
+      // 当没有数据时，返回一个合理的默认范围下限
+      // 基于用户profile或全局设置，这里使用55kg作为默认下限
+      return 55.0;
+    }
     
     final weights = _weightData.map((record) {
       final weight = record['weight'];
@@ -1646,15 +1822,19 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
     }).toList();
     
     final minWeight = weights.reduce((a, b) => a < b ? a : b);
-    // 最小值比实际数据的最低值再低10kg，但不低于30kg，并确保是5的倍数
-    final calculatedMin = (minWeight - 10).clamp(30.0, minWeight);
+    // 最小值比实际数据的最低值再低5kg，但不低于30kg，并确保是5的倍数
+    final calculatedMin = (minWeight - 5).clamp(30.0, minWeight - 1);
     final flooredMin = calculatedMin.floor();
     // 向下取整到最近的5的倍数
     return (flooredMin ~/ 5 * 5).toDouble();
   }
   
   double _getMaxWeight() {
-    if (_weightData.isEmpty) return 100.0; // 默认最大值
+    if (_weightData.isEmpty) {
+      // 当没有数据时，返回一个合理的默认范围上限
+      // 与下限相对应，这里使用75kg作为默认上限
+      return 75.0;
+    }
     
     final weights = _weightData.map((record) {
       final weight = record['weight'];
@@ -1668,27 +1848,25 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
     }).toList();
     
     final maxWeight = weights.reduce((a, b) => a > b ? a : b);
-    // 最大值比实际数据的最高值再高10kg，但不高于150kg，并确保是5的倍数
-    final calculatedMax = (maxWeight + 10).clamp(maxWeight, 150.0);
+    // 最大值比实际数据的最高值再高5kg，但不高于150kg，并确保是5的倍数
+    final calculatedMax = (maxWeight + 5).clamp(maxWeight + 1, 150.0);
     final ceiledMax = calculatedMax.ceil();
     // 向上取整到最近的5的倍数
     return ((ceiledMax + 4) ~/ 5 * 5).toDouble();
   }
   
   double _getWeightInterval() {
-    if (_weightData.isEmpty) return 1.0;
-    
     final minY = _getMinWeight();
     final maxY = _getMaxWeight();
     final range = maxY - minY;
     
     // 使用更安全的方法计算间隔
     if (range <= 0.1) {
-      return 1.0; // 如果体重范围太小，使用默认间隔
+      return 5.0; // 如果体重范围太小，使用5kg作为默认间隔
     }
     
-    // 计算合适的间隔，确保显示5-6个标签，间隔为5的倍数
-    final interval = (range / 5).ceil().toDouble();
+    // 计算合适的间隔，确保显示4-5个标签，间隔为5的倍数
+    final interval = (range / 4).ceil().toDouble();
     // 确保间隔是5的倍数，最小为5
     return (interval < 5 ? 5 : ((interval + 2) ~/ 5 * 5)).toDouble();
   }
@@ -1856,6 +2034,8 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
             ),
           );
         } else {
+          // 触发刷新
+          RefreshManagerHelper.refreshAfterWeightRecord();
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('Weight record added for ${DateFormat('dd/MM/yyyy').format(date)}'),
@@ -2052,6 +2232,186 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
         return period;
     }
   }
+  
+  // Search and filter weight records
+  void _filterWeightRecords() {
+    final searchText = _weightSearchController.text.toLowerCase();
+    List<Map<String, dynamic>> filtered = List.from(_weightData);
+    
+    // Apply text search (by date or weight)
+    if (searchText.isNotEmpty) {
+      filtered = filtered.where((record) {
+        final date = record['date'] as String;
+        final weight = record['weight'].toString();
+        final formattedDate = DateFormat('dd/MM/yyyy').format(
+          DateFormat('yyyy-MM-dd').parse(date)
+        );
+        
+        return date.toLowerCase().contains(searchText) ||
+               weight.toLowerCase().contains(searchText) ||
+               formattedDate.toLowerCase().contains(searchText);
+      }).toList();
+    }
+    
+    // Apply date range filter
+    if (_searchStartDate != null && _searchEndDate != null) {
+      filtered = filtered.where((record) {
+        final recordDate = DateFormat('yyyy-MM-dd').parse(record['date']);
+        return (recordDate.isAfter(_searchStartDate!) || recordDate.isAtSameMomentAs(_searchStartDate!)) &&
+               (recordDate.isBefore(_searchEndDate!) || recordDate.isAtSameMomentAs(_searchEndDate!));
+      }).toList();
+    }
+    
+    setState(() {
+      _filteredWeightData = filtered;
+    });
+  }
+  
+  void _clearSearchFilters() {
+    setState(() {
+      _weightSearchController.clear();
+      _searchStartDate = null;
+      _searchEndDate = null;
+      _filteredWeightData = List.from(_weightData);
+    });
+  }
+  
+  void _showDateRangeFilter() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        DateTime? startDate = _searchStartDate;
+        DateTime? endDate = _searchEndDate;
+        
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: Row(
+                children: [
+                  Icon(Icons.date_range, color: const Color(0xFF5AA162)),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Filter by Date Range',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.calendar_today),
+                    title: const Text('Start Date'),
+                    subtitle: Text(
+                      startDate != null
+                          ? DateFormat('dd/MM/yyyy').format(startDate!)
+                          : 'Select start date',
+                    ),
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: startDate ?? DateTime.now(),
+                        firstDate: DateTime(2020),
+                        lastDate: DateTime.now(),
+                      );
+                      if (picked != null) {
+                        setState(() {
+                          startDate = picked;
+                        });
+                      }
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.calendar_today),
+                    title: const Text('End Date'),
+                    subtitle: Text(
+                      endDate != null
+                          ? DateFormat('dd/MM/yyyy').format(endDate!)
+                          : 'Select end date',
+                    ),
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: endDate ?? DateTime.now(),
+                        firstDate: startDate ?? DateTime(2020),
+                        lastDate: DateTime.now(),
+                      );
+                      if (picked != null) {
+                        setState(() {
+                          endDate = picked;
+                        });
+                      }
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    this.setState(() {
+                      _searchStartDate = startDate;
+                      _searchEndDate = endDate;
+                    });
+                    Navigator.of(context).pop();
+                    _filterWeightRecords();
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF5AA162),
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('Apply'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // 获取对应的时间过滤器
+  String _getCorrespondingTimelineFilter(String weightPeriod) {
+    switch (weightPeriod) {
+      case '1week':
+        return 'Last 7 days';
+      case '1month':
+        return 'Last 30 days';
+      case '2mon':
+        return 'Last 2 months';
+      case '3mon':
+        return 'Last 3 months';
+      case '6mon':
+        return 'Last 6 months';
+      default:
+        return 'Last 7 days';
+    }
+  }
+
+  // 获取对应的体重时间段
+  String _getCorrespondingWeightPeriod(String timelineFilter) {
+    switch (timelineFilter) {
+      case 'Last 7 days':
+        return '1week';
+      case 'Last 30 days':
+        return '1month';
+      case 'Last 2 months':
+        return '2mon';
+      case 'Last 3 months':
+        return '3mon';
+      case 'Last 6 months':
+        return '6mon';
+      case 'All records':
+        return '6mon'; // 默认显示6个月的图表
+      default:
+        return '1week';
+    }
+  }
 
   // Add method to show edit weight dialog
   void _showEditWeightDialog(Map<String, dynamic> record) {
@@ -2205,6 +2565,8 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
             ),
           );
         } else {
+          // 触发刷新
+          RefreshManagerHelper.refreshAfterWeightRecord();
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('Weight record updated for ${DateFormat('dd/MM/yyyy').format(date)}'),

@@ -266,6 +266,33 @@ class NotificationService {
     print('Daily adjustment notification sent to system');
   }
 
+  /// 显示自定义标题的每日调整通知
+  Future<void> showDailyAdjustmentNotificationWithCustomTitle({
+    required String title,
+    required int previousTarget,
+    required int newTarget,
+    required int adjustment,
+    required String reason,
+  }) async {
+    final body = 'Your daily target has been adjusted from $previousTarget to $newTarget calories (${adjustment > 0 ? '+' : ''}$adjustment).\n\nReason: $reason';
+    
+    print('=== Custom Daily Adjustment Notification ===');
+    print('Title: $title');
+    print('Body: $body');
+    print('Previous target: $previousTarget');
+    print('New target: $newTarget');
+    print('Adjustment: $adjustment');
+    print('Reason: $reason');
+    
+    await showCalorieAdjustmentNotification(
+      title: title,
+      body: body,
+      payload: 'daily_adjustment',
+    );
+    
+    print('Custom daily adjustment notification sent to system');
+  }
+
   /// 显示每周调整通知
   Future<void> showWeeklyAdjustmentNotification({
     required int previousTarget,
@@ -284,9 +311,11 @@ class NotificationService {
     );
   }
 
-  /// 显示自动调整完成通知
+    /// 显示自动调整完成通知
   Future<void> showAutoAdjustmentNotification({
     required Map<String, dynamic> result,
+    bool isCatchUp = false,
+    bool isManualTrigger = false,
   }) async {
     print('=== Auto Adjustment Notification Debug ===');
     print('Result: $result');
@@ -298,11 +327,26 @@ class NotificationService {
       print('New target: ${daily['newTarget']}');
       print('Adjustment: ${daily['adjustment']}');
       
-      await showDailyAdjustmentNotification(
+      // 根据触发类型调整通知内容
+      String title = 'Daily Calorie Target Adjusted';
+      String reasonPrefix = '';
+      
+      if (isCatchUp) {
+        title = '📅 Missed Adjustment Applied';
+        reasonPrefix = 'Catch-up: ';
+      } else if (isManualTrigger) {
+        title = '✅ Manual Adjustment Complete';
+        reasonPrefix = 'User-triggered: ';
+      }
+      
+      final adjustedReason = reasonPrefix + (daily['reason'] ?? 'Daily intake adjustment');
+      
+      await showDailyAdjustmentNotificationWithCustomTitle(
+        title: title,
         previousTarget: daily['previousTarget'].round(),
         newTarget: daily['newTarget'].round(),
         adjustment: daily['adjustment'].round(),
-        reason: daily['reason'] ?? 'Daily intake adjustment',
+        reason: adjustedReason,
       );
       print('Daily adjustment notification sent successfully');
     } else {

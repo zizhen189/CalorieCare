@@ -46,6 +46,9 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
   // Add password visibility control
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
+  
+  // Add target weight validation error message
+  String? _targetWeightError;
 
   // Add Firebase instances
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -76,10 +79,7 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () => Navigator.pop(context),
-        ),
+        automaticallyImplyLeading: false,
         title: const Text(
           'Create Account',
           style: TextStyle(
@@ -250,6 +250,9 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
         return gender != null;
       case 2:
         return birthDate != null;
+      case 5:
+        // 在BMI计算步骤后验证目标是否合理
+        return _validateGoalWithBMI();
       case 7:
         return activityLevel != null;
       case 8:
@@ -270,6 +273,167 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
         return true;
       default:
         return true;
+    }
+  }
+
+  bool _validateGoalWithBMI() {
+    // 计算当前BMI
+    double currentBMI = weight / ((height / 100) * (height / 100));
+    String bmiCategory = _getBMICategory(currentBMI);
+    
+    // 检查目标是否与BMI状态匹配
+    bool isGoalReasonable = true;
+    String suggestedGoal = '';
+    String reasonMessage = '';
+    
+    if (goal == 'gain' && (bmiCategory == 'Overweight' || bmiCategory == 'Obese')) {
+      isGoalReasonable = false;
+      suggestedGoal = 'lose';
+      reasonMessage = 'Your BMI is ${currentBMI.toStringAsFixed(1)} ($bmiCategory). A weight loss goal is recommended for a healthy range.';
+    } else if (goal == 'lose' && bmiCategory == 'Underweight') {
+      isGoalReasonable = false;
+      suggestedGoal = 'gain';
+      reasonMessage = 'Your BMI is ${currentBMI.toStringAsFixed(1)} ($bmiCategory). A weight gain goal is recommended for a healthy range.';
+    } else if (goal == 'maintain' && bmiCategory == 'Underweight') {
+      isGoalReasonable = false;
+      suggestedGoal = 'gain';
+      reasonMessage = 'Your BMI is ${currentBMI.toStringAsFixed(1)} ($bmiCategory). A weight gain goal is recommended to reach a healthy range.';
+    } else if (goal == 'maintain' && (bmiCategory == 'Overweight' || bmiCategory == 'Obese')) {
+      isGoalReasonable = false;
+      suggestedGoal = 'lose';
+      reasonMessage = 'Your BMI is ${currentBMI.toStringAsFixed(1)} ($bmiCategory). A weight loss goal is recommended to reach a healthy range.';
+    }
+    
+    if (!isGoalReasonable) {
+      _showGoalWarningDialog(reasonMessage, suggestedGoal);
+      return false;
+    }
+    
+    return true;
+  }
+
+  void _showGoalWarningDialog(String message, String suggestedGoal) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          title: Row(
+            children: [
+              Icon(
+                Icons.warning_amber_rounded,
+                color: Colors.orange,
+                size: 28,
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Goal Recommendation',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                message,
+                style: const TextStyle(
+                  fontSize: 16,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF5AA162).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: const Color(0xFF5AA162).withOpacity(0.3),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.lightbulb_outline,
+                      color: const Color(0xFF5AA162),
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'We recommend choosing "${_getGoalDisplayName(suggestedGoal)}" goal',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: const Color(0xFF5AA162),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                // 自动设置建议的目标
+                setState(() {
+                  goal = suggestedGoal;
+                  _currentStep = 0;
+                  _pageController.animateToPage(
+                    0,
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeInOut,
+                  );
+                });
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF5AA162),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 12,
+                ),
+              ),
+              child: const Text(
+                'Accept',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  String _getGoalDisplayName(String goalValue) {
+    switch (goalValue) {
+      case 'lose':
+        return 'Weight Loss';
+      case 'gain':
+        return 'Weight Gain';
+      case 'maintain':
+        return 'Maintain Weight';
+      default:
+        return goalValue;
     }
   }
 
@@ -1202,12 +1366,66 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
                 final newWeight = double.tryParse(value);
                 if (newWeight != null && newWeight >= minWeight && newWeight <= maxWeight) {
                   setState(() {
-                    targetWeight = newWeight;
+                    // Reset error message
+                    _targetWeightError = null;
+                    
+                    // Additional goal-specific constraints
+                    if (goal == 'lose' && newWeight >= weight) {
+                      targetWeight = math.max(weight - 0.5, minWeight);
+                      _targetWeightError = 'Weight loss target must be less than current weight (${weight}kg)';
+                      _targetWeightController.text = targetWeight.toString();
+                    } else if (goal == 'gain' && newWeight <= weight) {
+                      targetWeight = math.min(weight + 0.5, maxWeight);
+                      _targetWeightError = 'Weight gain target must be greater than current weight (${weight}kg)';
+                      _targetWeightController.text = targetWeight.toString();
+                    } else {
+                      targetWeight = newWeight;
+                    }
+                  });
+                } else {
+                  setState(() {
+                    if (value.isNotEmpty) {
+                      _targetWeightError = 'Please enter a valid weight (${minWeight.toInt()}-${maxWeight.toInt()}kg)';
+                    } else {
+                      _targetWeightError = null;
+                    }
                   });
                 }
               },
             ),
           ),
+          
+          // Error message display
+          if (_targetWeightError != null)
+            Container(
+              margin: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.red.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.red.withOpacity(0.3)),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.warning_amber_rounded,
+                    color: Colors.red,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _targetWeightError!,
+                      style: const TextStyle(
+                        color: Colors.red,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           
           const SizedBox(height: 15),
           
@@ -1287,6 +1505,9 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
                       
                       // Constrain to valid weight range
                       double newWeight = weightValue.clamp(validMinWeight, validMaxWeight);
+                      
+                      // Clear any existing error message when using slider
+                      _targetWeightError = null;
                       
                       // Additional goal-specific constraints
                       if (goal == 'lose' && newWeight >= weight) {
@@ -1571,6 +1792,50 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
                   ),
                   textAlign: TextAlign.center,
                 ),
+                const SizedBox(height: 16),
+                // 健康体重范围建议
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: Colors.white.withOpacity(0.3),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.favorite_outline,
+                            color: Colors.white,
+                            size: 16,
+                          ),
+                          const SizedBox(width: 8),
+                          const Text(
+                            'Healthy Weight Range',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _getHealthyWeightRange(),
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: Colors.white70,
+                          height: 1.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
@@ -1599,6 +1864,14 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
     if (bmi < 25) return 'You have a healthy weight for your height. Keep up the good work!';
     if (bmi < 30) return 'You may benefit from losing some weight. A balanced diet and exercise can help.';
     return 'Consider consulting with a healthcare provider about weight management strategies.';
+  }
+
+  String _getHealthyWeightRange() {
+    final heightInMeters = height / 100;
+    final minHealthyWeight = 18.5 * heightInMeters * heightInMeters;
+    final maxHealthyWeight = 24.9 * heightInMeters * heightInMeters;
+    
+    return 'Based on your height of ${height}cm, healthy weight range is ${minHealthyWeight.toStringAsFixed(1)}kg - ${maxHealthyWeight.toStringAsFixed(1)}kg (BMI 18.5-24.9)';
   }
 
   Widget _buildActivityLevelSelection() {
@@ -1933,11 +2206,16 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
           const SizedBox(height: 20),
           TextFormField(
             obscureText: _obscurePassword,
+            style: const TextStyle(
+              color: Colors.black,
+              fontSize: 16,
+            ),
             decoration: InputDecoration(
               filled: true,
               fillColor: Colors.white,
               hintText: 'Password',
-              prefixIcon: const Icon(Icons.lock),
+              hintStyle: TextStyle(color: Colors.grey.shade500),
+              prefixIcon: const Icon(Icons.lock, color: Colors.grey),
               suffixIcon: IconButton(
                 icon: Icon(
                   _obscurePassword ? Icons.visibility : Icons.visibility_off,
@@ -1965,63 +2243,96 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
             Row(
               children: [
                 Expanded(
-                  child: LinearProgressIndicator(
-                    value: passwordStrength == 'strong' ? 1.0 : 
-                           passwordStrength == 'no_number' ? 0.75 :
-                           passwordStrength == 'no_lowercase' ? 0.5 :
-                           passwordStrength == 'no_uppercase' ? 0.25 : 0.0,
-                    backgroundColor: Colors.grey[300],
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      passwordStrength == 'strong' ? Colors.green :
-                      passwordStrength == 'no_number' ? Colors.lightGreen :
-                      passwordStrength == 'no_lowercase' ? Colors.orange :
-                      passwordStrength == 'no_uppercase' ? Colors.orangeAccent :
-                      Colors.red,
+                  child: Container(
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: Colors.grey.shade400, width: 1),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: passwordStrength == 'strong' ? 1.0 : 
+                               passwordStrength == 'no_number' ? 0.75 :
+                               passwordStrength == 'no_lowercase' ? 0.5 :
+                               passwordStrength == 'no_uppercase' ? 0.25 : 0.0,
+                        backgroundColor: Colors.grey.shade200,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          passwordStrength == 'strong' ? Colors.green.shade600 :
+                          passwordStrength == 'no_number' ? Colors.blue.shade600 :
+                          passwordStrength == 'no_lowercase' ? Colors.orange.shade600 :
+                          passwordStrength == 'no_uppercase' ? Colors.purple.shade600 :
+                          Colors.red.shade600,
+                        ),
+                      ),
                     ),
                   ),
                 ),
                 const SizedBox(width: 10),
-                Text(
-                  passwordStrength == 'strong' ? 'Strong' :
-                  passwordStrength == 'no_number' ? 'Good' :
-                  passwordStrength == 'no_lowercase' ? 'Fair' :
-                  passwordStrength == 'no_uppercase' ? 'Weak' :
-                  'Too Short',
-                  style: TextStyle(
-                    color: passwordStrength == 'strong' ? Colors.green :
-                           passwordStrength == 'no_number' ? Colors.lightGreen :
-                           passwordStrength == 'no_lowercase' ? Colors.orange :
-                           passwordStrength == 'no_uppercase' ? Colors.orangeAccent :
-                           Colors.red,
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.9),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    passwordStrength == 'strong' ? 'Strong' :
+                    passwordStrength == 'no_number' ? 'Good' :
+                    passwordStrength == 'no_lowercase' ? 'Fair' :
+                    passwordStrength == 'no_uppercase' ? 'Weak' :
+                    'Too Short',
+                    style: TextStyle(
+                      color: passwordStrength == 'strong' ? Colors.green.shade700 :
+                             passwordStrength == 'no_number' ? Colors.blue.shade700 :
+                             passwordStrength == 'no_lowercase' ? Colors.orange.shade700 :
+                             passwordStrength == 'no_uppercase' ? Colors.purple.shade700 :
+                             Colors.red.shade700,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 5),
-            Text(
-              passwordStrength == 'strong' ? 'Password is strong' :
-              passwordStrength == 'no_number' ? 'Add a number' :
-              passwordStrength == 'no_lowercase' ? 'Add a lowercase letter' :
-              passwordStrength == 'no_uppercase' ? 'Add an uppercase letter' :
-              'Password must be at least 8 characters',
-              style: TextStyle(
-                color: passwordStrength == 'strong' ? Colors.green :
-                       passwordStrength == 'no_number' ? Colors.lightGreen :
-                       passwordStrength == 'no_lowercase' ? Colors.orange :
-                       passwordStrength == 'no_uppercase' ? Colors.orangeAccent :
-                       Colors.red,
-                fontSize: 12,
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.9),
+                borderRadius: BorderRadius.circular(15),
+              ),
+              child: Text(
+                passwordStrength == 'strong' ? 'Password is strong' :
+                passwordStrength == 'no_number' ? 'Add a number' :
+                passwordStrength == 'no_lowercase' ? 'Add a lowercase letter' :
+                passwordStrength == 'no_uppercase' ? 'Add an uppercase letter' :
+                'Password must be at least 8 characters',
+                style: TextStyle(
+                  color: passwordStrength == 'strong' ? Colors.green.shade700 :
+                         passwordStrength == 'no_number' ? Colors.blue.shade700 :
+                         passwordStrength == 'no_lowercase' ? Colors.orange.shade700 :
+                         passwordStrength == 'no_uppercase' ? Colors.purple.shade700 :
+                         Colors.red.shade700,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ],
           const SizedBox(height: 20),
           TextFormField(
             obscureText: _obscureConfirmPassword,
+            style: const TextStyle(
+              color: Colors.black,
+              fontSize: 16,
+            ),
             decoration: InputDecoration(
               filled: true,
               fillColor: Colors.white,
               hintText: 'Confirm Password',
-              prefixIcon: const Icon(Icons.lock),
+              hintStyle: TextStyle(color: Colors.grey.shade500),
+              prefixIcon: const Icon(Icons.lock, color: Colors.grey),
               suffixIcon: IconButton(
                 icon: Icon(
                   _obscureConfirmPassword ? Icons.visibility : Icons.visibility_off,
@@ -2168,7 +2479,6 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
             'Weight': weight,
             'BMR': bmr,
             'TDEE': tdee,
-            'CreatedAt': FieldValue.serverTimestamp(),
           });
 
           // Create target record for all goals (including maintain)
@@ -2194,7 +2504,6 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
             'TargetDuration': targetDuration,
             'TargetCalories': dailyCalorieTarget,
             'EstimatedTargetDate': goal == 'maintain' ? null : _calculateTargetDateTimestamp(),
-            'CreatedAt': FieldValue.serverTimestamp(),
           });
 
           // Create StreakRecord record

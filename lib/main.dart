@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:timezone/data/latest.dart' as tz;
 import 'package:caloriecare/login.dart';
 import 'package:caloriecare/steppersignup.dart';
 import 'package:caloriecare/homepage.dart';
@@ -7,19 +9,41 @@ import 'package:caloriecare/homepage_enhanced.dart';
 import 'package:caloriecare/user_model.dart';
 import 'package:caloriecare/forget_password.dart';
 import 'package:caloriecare/notification_service.dart';
+import 'package:caloriecare/fcm_service.dart';
+import 'package:caloriecare/global_notification_manager.dart';
 import 'package:caloriecare/session_service.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_fonts/google_fonts.dart';
+
+// 背景消息处理器必须是顶级函数
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp();
+  print('=== Background Message Handler ===');
+  print('Title: ${message.notification?.title}');
+  print('Body: ${message.notification?.body}');
+  print('Data: ${message.data}');
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   try {
+    // 初始化timezone数据库
+    tz.initializeTimeZones();
+    
     await Firebase.initializeApp();
+    
+    // 注册背景消息处理器
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    
     await dotenv.load(fileName: ".env");
-    // Fix: Create instance of NotificationService to call initialize
-    final notificationService = NotificationService();
-    await notificationService.initialize();
+    
+    // 初始化全局通知管理器（替代原有的通知服务）
+    final globalNotificationManager = GlobalNotificationManager();
+    await globalNotificationManager.initialize();
+    
+    print('App initialization completed successfully');
   } catch (e) {
     print('Initialization error: $e');
   }

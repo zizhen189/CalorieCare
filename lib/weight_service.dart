@@ -6,6 +6,45 @@ class WeightService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final GoalAchievementService _goalService = GoalAchievementService();
 
+  /// Generate new WeightID
+  Future<String> _generateWeightID() async {
+    try {
+      QuerySnapshot snapshot = await _firestore
+          .collection('WeightRecord')
+          .get();
+
+      if (snapshot.docs.isEmpty) {
+        return 'W00001';
+      }
+
+      // 在内存中排序，找到最大的WeightID
+      final weightIds = snapshot.docs
+          .map((doc) {
+            final data = doc.data();
+            if (data != null && data is Map<String, dynamic>) {
+              return data['WeightID'] as String?;
+            }
+            return null;
+          })
+          .where((id) => id != null)
+          .cast<String>()
+          .toList();
+      
+      if (weightIds.isEmpty) {
+        return 'W00001';
+      }
+      
+      weightIds.sort((a, b) => b.compareTo(a)); // 降序
+      String lastWeightID = weightIds.first;
+      int lastNumber = int.parse(lastWeightID.substring(1));
+      int newNumber = lastNumber + 1;
+      return 'W${newNumber.toString().padLeft(5, '0')}';
+    } catch (e) {
+      print('Error generating weight ID: $e');
+      return 'W00001';
+    }
+  }
+
   // 检查今天是否已经记录体重
   Future<bool> hasRecordedWeightToday(String userId) async {
     try {
@@ -33,12 +72,13 @@ class WeightService {
       print('Weight: $weight');
       
       final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      final weightId = await _generateWeightID();
       
       await _firestore.collection('WeightRecord').add({
+        'WeightID': weightId,
         'UserID': userId,
         'Weight': weight,
         'RecordDate': today,
-        'RecordTime': FieldValue.serverTimestamp(),
       });
 
       print('Weight recorded successfully');
@@ -64,11 +104,13 @@ class WeightService {
   // 为特定日期记录体重并检查目标达成
   Future<Map<String, dynamic>> recordWeightForDate(String userId, double weight, String dateStr) async {
     try {
+      final weightId = await _generateWeightID();
+      
       await _firestore.collection('WeightRecord').add({
+        'WeightID': weightId,
         'UserID': userId,
         'Weight': weight,
         'RecordDate': dateStr,
-        'RecordTime': FieldValue.serverTimestamp(),
       });
 
       // Only check goal achievement if recording for today
@@ -115,9 +157,9 @@ class WeightService {
         final data = doc.data();
         return {
           'id': doc.id,
+          'weightId': data['WeightID'] ?? '',
           'weight': data['Weight'] ?? 0.0,
           'date': data['RecordDate'] ?? '',
-          'timestamp': data['RecordTime'],
         };
       }).toList();
     } catch (e) {
@@ -145,9 +187,9 @@ class WeightService {
         final data = latestDoc.data();
         return {
           'id': latestDoc.id,
+          'weightId': data['WeightID'] ?? '',
           'weight': data['Weight'] ?? 0.0,
           'date': data['RecordDate'] ?? '',
-          'timestamp': data['RecordTime'],
         };
       }
       return null;
@@ -191,9 +233,9 @@ class WeightService {
         final data = doc.data();
         return {
           'id': doc.id,
+          'weightId': data['WeightID'] ?? '',
           'weight': data['Weight'] ?? 0.0,
           'date': data['RecordDate'] ?? '',
-          'timestamp': data['RecordTime'],
         };
       }).toList();
     } catch (e) {
@@ -224,7 +266,6 @@ class WeightService {
         await docRef.update({
           'Weight': newWeight,
           'RecordDate': newDate,
-          'RecordTime': FieldValue.serverTimestamp(),
         });
         print('Weight record updated successfully');
       } else {

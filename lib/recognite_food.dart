@@ -13,6 +13,7 @@ import 'package:caloriecare/streak_page.dart';
 import 'package:caloriecare/user_model.dart';
 import 'package:caloriecare/homepage.dart';
 import 'package:caloriecare/loading_utils.dart';
+import 'package:caloriecare/refresh_manager.dart';
 import 'package:caloriecare/session_service.dart';
 
 // 性能监控工具
@@ -847,6 +848,8 @@ Rules:
         );
       } else {
         // If streak was already triggered today, return to previous page
+        // 触发刷新
+        RefreshManagerHelper.refreshAfterLogFood();
         Navigator.of(context).pop(true);
       }
     }

@@ -1,6 +1,7 @@
 import 'package:caloriecare/streak_calendar_page.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:caloriecare/user_model.dart';
 import 'package:caloriecare/log_food.dart';
@@ -10,11 +11,16 @@ import 'package:caloriecare/calorie_adjustment_service.dart'; // Added import fo
 import 'package:caloriecare/auto_adjustment_service.dart'; // Added import for AutoAdjustmentService
 import 'package:caloriecare/notification_service.dart'; // Added import for NotificationService
 import 'package:caloriecare/invitation_notification_service.dart'; // Added import for InvitationNotificationService
+import 'package:caloriecare/fcm_invitation_service.dart'; // Added import for FCM Invitation Service
+import 'package:caloriecare/fcm_notification_service.dart'; // Added import for FCM Notification Service
+import 'package:caloriecare/global_notification_manager.dart'; // Added import for Global Notification Manager
 import 'package:caloriecare/meal_detail_page.dart'; // Added import for MealDetailPage
 import 'package:caloriecare/weight_service.dart'; // Added import for WeightService
 import 'package:caloriecare/weight_record_page.dart'; // Added import for WeightRecordPage
 import 'package:caloriecare/profile_page.dart'; // Added import for ProfilePage
+import 'package:shared_preferences/shared_preferences.dart'; // Added import for SharedPreferences
 import 'package:caloriecare/session_service.dart'; // Added import for SessionService
+import 'package:caloriecare/refresh_manager.dart'; // Added import for RefreshManager
 
 
 void main() {
@@ -64,6 +70,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   bool _hasActiveAdjustment = false;
   int _originalTarget = 0;
   final AutoAdjustmentService _autoAdjustmentService = AutoAdjustmentService();
+  // 使用全局通知管理器替代多个单独的服务
+  final GlobalNotificationManager _globalNotificationManager = GlobalNotificationManager();
+  // 保留原有服务作为备用
   final NotificationService _notificationService = NotificationService();
   final InvitationNotificationService _invitationService = InvitationNotificationService();
   
@@ -71,19 +80,68 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   final WeightService _weightService = WeightService();
   bool _hasRecordedWeightToday = false;
 
+  // Add refresh manager
+  final RefreshManager _refreshManager = RefreshManager();
+  late StreamSubscription<bool> _homePageRefreshSubscription;
+  late StreamSubscription<bool> _calorieTargetRefreshSubscription;
+
   @override
   void initState() {
     super.initState();
     // Use initialSelectedDate if provided, otherwise default to today
     selectedDate = widget.initialSelectedDate ?? DateTime.now();
+    _setupRefreshListeners();
     _checkSessionAndInitialize();
+  }
+
+  /// 设置刷新监听器
+  void _setupRefreshListeners() {
+    // 监听首页刷新事件
+    _homePageRefreshSubscription = _refreshManager.homePageRefreshStream.listen((_) {
+      print('📱 HomePage: Received refresh signal');
+      _refreshAllData();
+    });
+
+    // 监听卡路里目标刷新事件
+    _calorieTargetRefreshSubscription = _refreshManager.calorieTargetRefreshStream.listen((_) {
+      print('🎯 HomePage: Received calorie target refresh signal');
+      _refreshCalorieData();
+    });
+  }
+
+  /// 刷新所有数据
+  Future<void> _refreshAllData() async {
+    print('🔄 HomePage: Refreshing all data...');
+    await Future.wait([
+      _loadTodayCalories(),
+      _loadStreakData(),
+      _loadAdjustedTarget(),
+      _checkWeightRecord(),
+    ]);
+    print('✅ HomePage: All data refreshed');
+  }
+
+  /// 刷新卡路里相关数据
+  Future<void> _refreshCalorieData() async {
+    print('🔄 HomePage: Refreshing calorie data...');
+    await Future.wait([
+      _loadTodayCalories(),
+      _loadAdjustedTarget(),
+    ]);
+    print('✅ HomePage: Calorie data refreshed');
   }
 
   @override
   void dispose() {
     _autoAdjustmentService.stopAutoAdjustment();
+    // 停止全局通知管理器的用户监听器
+    _globalNotificationManager.stopUserListeners();
+    // 停止备用服务
     _notificationService.stopCustomMessageListener();
     _invitationService.stopInvitationListener();
+    // 停止刷新监听器
+    _homePageRefreshSubscription.cancel();
+    _calorieTargetRefreshSubscription.cancel();
     super.dispose();
   }
 
@@ -122,8 +180,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _loadAdjustedTarget(); // Load adjusted target if exists
     _startAutoAdjustment(); // Start auto adjustment service
     _checkWeightRecord(); // Check if weight has been recorded today
-    _startCustomMessageListener(); // Start custom message listener
-    _startInvitationListener(); // Start invitation listener
+    _startGlobalNotificationManager(); // Start global notification manager (primary)
+    // 注释掉旧服务以避免重复通知
+    // _startCustomMessageListener(); // Start custom message listener  
+    // _startInvitationListener(); // Start invitation listener
   }
 
   // New method to load streak data
@@ -174,8 +234,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         // Check if this is a new user (registered today)
         final isNewUser = await _isNewUser(currentUser.userID);
         
-        // Only show reminder if not a new user
-        if (!isNewUser) {
+        // Check if user chose not to be reminded today
+        final prefs = await SharedPreferences.getInstance();
+        final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+        final skipReminderKey = 'skip_weight_reminder_${currentUser.userID}_$today';
+        final skipReminderToday = prefs.getBool(skipReminderKey) ?? false;
+        
+        // Only show reminder if not a new user and user hasn't chosen to skip today
+        if (!isNewUser && !skipReminderToday) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _showWeightReminder();
           });
@@ -223,6 +289,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
           title: Row(
             children: [
               Icon(Icons.monitor_weight, color: const Color(0xFF5AA162)),
@@ -242,6 +311,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 Navigator.of(context).pop();
               },
               child: Text('Later', style: TextStyle(color: Colors.grey)),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.of(context).pop();
+                await _skipReminderToday();
+              },
+              child: Text('Don\'t remind today', style: TextStyle(color: Colors.orange)),
             ),
             ElevatedButton(
               onPressed: () async {
@@ -264,6 +340,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF5AA162),
                 foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
               ),
               child: Text('Record Weight'),
             ),
@@ -271,6 +350,33 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         );
       },
     );
+  }
+
+  // Skip weight reminder for today
+  Future<void> _skipReminderToday() async {
+    try {
+      UserModel? currentUser = widget.user ?? await SessionService.getUserSession();
+      if (currentUser == null) return;
+      
+      final prefs = await SharedPreferences.getInstance();
+      final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      final skipReminderKey = 'skip_weight_reminder_${currentUser.userID}_$today';
+      
+      await prefs.setBool(skipReminderKey, true);
+      
+      // Show confirmation
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Weight reminder disabled for today'),
+          backgroundColor: Colors.orange,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      print('Error skipping reminder: $e');
+    }
   }
 
   // Start auto adjustment service - 添加重复启动检查
@@ -301,7 +407,49 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     }
   }
 
-
+  // Start global notification manager (primary notification system)
+  Future<void> _startGlobalNotificationManager() async {
+    UserModel? currentUser = widget.user ?? await SessionService.getUserSession();
+    if (currentUser == null || currentUser.userID.isEmpty) {
+      print('No current user found, cannot start global notification manager');
+      return;
+    }
+    
+    print('Starting Global Notification Manager for user: ${currentUser.userID}');
+    
+    try {
+      await _globalNotificationManager.startUserListeners(
+        currentUser.userID,
+        onInvitationReceived: (supervisionId, supervisionData) {
+          print('=== GLOBAL MANAGER INVITATION RECEIVED ===');
+          print('Supervision ID: $supervisionId');
+          print('Supervision Data: $supervisionData');
+          
+          // Show invitation dialog with delay to ensure UI is ready
+          Future.delayed(Duration(milliseconds: 100), () {
+            if (mounted) {
+              _showInvitationDialog(supervisionId, supervisionData);
+            }
+          });
+        },
+        onMessageReceived: (message) {
+          print('=== GLOBAL MANAGER MESSAGE RECEIVED ===');
+          print('Message: ${message.notification?.title}');
+          // 可以在这里处理其他类型的消息
+        },
+      );
+      
+      print('Global Notification Manager started successfully');
+      
+      // 输出状态信息用于调试
+      final status = _globalNotificationManager.getStatus();
+      print('Global Notification Manager Status: $status');
+      
+      // 全局通知管理器启动完成
+    } catch (e) {
+      print('Error starting Global Notification Manager: $e');
+    }
+  }
 
   // Start custom message listener
   Future<void> _startCustomMessageListener() async {
@@ -544,6 +692,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         
         print('Supervision record initialized for streak tracking');
         
+        // 触发相关数据刷新
+        RefreshManagerHelper.refreshAfterAcceptSupervisor();
+        
         // 可以在这里添加导航到streak calendar页面的逻辑
         // 或者显示一个提示，告诉用户可以在streak calendar中查看supervisor
         ScaffoldMessenger.of(context).showSnackBar(
@@ -623,18 +774,27 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       final adjustmentService = CalorieAdjustmentService();
       final adjustedTarget = await adjustmentService.getCurrentActiveTargetCalories(currentUser.userID);
       
+      print('=== Loading Adjusted Target ===');
+      print('Original target: $_originalTarget');
+      print('Adjusted target: $adjustedTarget');
+      print('User ID: ${currentUser.userID}');
+      
       // Check if there's an active adjustment
       final adjustmentHistory = await adjustmentService.getAdjustmentHistory(currentUser.userID, limit: 1);
       
       setState(() {
         if (adjustmentHistory.isNotEmpty && adjustedTarget != _originalTarget) {
+          print('✅ Using adjusted target: $adjustedTarget');
           kcalGoal = adjustedTarget;
           _hasActiveAdjustment = true;
         } else {
+          print('❌ Using original target: $_originalTarget');
           _hasActiveAdjustment = false;
         }
         kcalAvailable = kcalGoal - totalCaloriesConsumed;
       });
+      print('Final kcalGoal: $kcalGoal');
+      print('=== End Loading Adjusted Target ===');
     } catch (e) {
       print('Error loading adjusted target: $e');
     }
