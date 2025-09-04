@@ -46,6 +46,3 @@ app.*.map.json
 
 
 *.env
-
-# Firebase sensitive files
-assets/firebase/*.json
