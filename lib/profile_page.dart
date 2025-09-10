@@ -1336,6 +1336,7 @@ class _ProfilePageState extends State<ProfilePage> {
         _deleteLogMealListRecords(db, userId),
         _deleteSupervisionListRecords(db, userId),
         _deleteSupervisionRecords(db, userId),
+        _deleteBlacklistRecords(db, userId),
       ]);
 
       // Clear session data
@@ -1451,6 +1452,28 @@ class _ProfilePageState extends State<ProfilePage> {
       for (var doc in supervisionQuery.docs) {
         await doc.reference.delete();
       }
+    }
+  }
+
+  Future<void> _deleteBlacklistRecords(FirebaseFirestore db, String userId) async {
+    // Delete blacklist records where user is the one who blocked others (UserID)
+    final userBlacklistQuery = await db
+        .collection('Blacklist')
+        .where('UserID', isEqualTo: userId)
+        .get();
+    
+    for (var doc in userBlacklistQuery.docs) {
+      await doc.reference.delete();
+    }
+
+    // Delete blacklist records where user is the one being blocked (BlockedUserID)
+    final blockedBlacklistQuery = await db
+        .collection('Blacklist')
+        .where('BlockedUserID', isEqualTo: userId)
+        .get();
+    
+    for (var doc in blockedBlacklistQuery.docs) {
+      await doc.reference.delete();
     }
   }
 

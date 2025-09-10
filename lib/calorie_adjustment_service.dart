@@ -175,7 +175,25 @@ class CalorieAdjustmentService {
 
   /// 获取用户当前生效的目标卡路里（显示用）
   Future<double> _getCurrentTargetCalories(String userId) async {
-    // 首先检查今天是否有调整记录
+    // 首先检查用户当前的目标类型
+    final targetQuery = await _firestore
+        .collection('Target')
+        .where('UserID', isEqualTo: userId)
+        .get();
+    
+    if (targetQuery.docs.isNotEmpty) {
+      final targetData = targetQuery.docs.first.data();
+      final targetType = targetData['TargetType'] ?? 'maintain';
+      
+      // 如果用户已经切换到 maintain 模式，直接使用 Target 表中的卡路里目标
+      if (targetType == 'maintain') {
+        final maintainTarget = (targetData['TargetCalories'] ?? 2000.0).toDouble();
+        print('User in maintain mode, using maintain target: $maintainTarget');
+        return maintainTarget;
+      }
+    }
+    
+    // 如果用户还在 gain/loss 模式，检查调整记录
     final today = DateTime.now();
     final todayStr = today.toIso8601String().split('T')[0];
     
@@ -212,6 +230,14 @@ class CalorieAdjustmentService {
     // 如果都没有调整，使用原始目标
     final baseTarget = await _getBaseTargetCalories(userId);
     print('Using base target: $baseTarget');
+    return baseTarget;
+  }
+
+  /// 获取指定日期的目标卡路里（用于历史数据显示，不受调整影响）
+  Future<double> getTargetCaloriesForDate(String userId, String date) async {
+    // 对于历史数据，总是使用原始目标，不受调整影响
+    final baseTarget = await _getBaseTargetCalories(userId);
+    print('Using base target for historical date $date: $baseTarget');
     return baseTarget;
   }
 
@@ -256,7 +282,19 @@ class CalorieAdjustmentService {
       final currentDisplayTarget = await _getCurrentTargetCalories(userId); // 当前显示的目标
       final bmr = _calculateBMR(userData);
       final tdee = _calculateTDEE(userData);
-      final goal = userData['Goal'] ?? 'maintain';
+      
+      // 从Target表获取正确的目标类型
+      final targetQuery = await _firestore
+          .collection('Target')
+          .where('UserID', isEqualTo: userId)
+          .get();
+      
+      String goal = 'maintain'; // 默认值
+      if (targetQuery.docs.isNotEmpty) {
+        final targetData = targetQuery.docs.first.data();
+        goal = targetData['TargetType'] ?? 'maintain';
+      }
+      
       final gender = userData['Gender'] ?? 'male';
       
       // 检查是否需要调整（基于目标类型，使用原始目标）
@@ -282,11 +320,8 @@ class CalorieAdjustmentService {
       print('Deviation from base: $deviation');
       print('New calculated target: $newTarget');
       
-      // 应用基于目标的安全边界
-      newTarget = _applySafetyBoundaries(newTarget, goal, bmr, tdee, gender);
-      
-      // 如果调整幅度太小，不进行调整
-      if ((newTarget - baseTarget).abs() < 25) {
+      // 先检查调整幅度，如果太小则不进行调整
+      if ((newTarget - baseTarget).abs() < 50) {
         return {
           'success': false,
           'reason': 'Adjustment too small',
@@ -294,6 +329,9 @@ class CalorieAdjustmentService {
           'baseTarget': baseTarget,
         };
       }
+      
+      // 应用基于目标的安全边界
+      newTarget = _applySafetyBoundaries(newTarget, goal, bmr, tdee, gender);
       
       // 创建调整记录
       await _createAdjustmentRecord(
@@ -332,6 +370,7 @@ class CalorieAdjustmentService {
         // 增重目标：只有摄入低于目标时才调整
         return intake < target;
       case 'loss':
+      case 'lose':
         // 减重目标：只有摄入高于目标时才调整
         return intake > target;
       case 'maintain':
@@ -353,6 +392,7 @@ class CalorieAdjustmentService {
         maxCalories = tdee + 500;
         break;
       case 'loss':
+      case 'lose':
         // 减重目标：最小 = max(BMR, 1200女性/1500男性)
         int genderMinimum = gender.toLowerCase() == 'female' ? 1200 : 1500;
         minCalories = [bmr, genderMinimum.toDouble()].reduce((a, b) => a > b ? a : b);
@@ -625,7 +665,19 @@ class CalorieAdjustmentService {
       final baseTarget = await _getBaseTargetCalories(userId);
       final bmr = _calculateBMR(userData);
       final tdee = _calculateTDEE(userData);
-      final goal = userData['Goal'] ?? 'maintain';
+      
+      // 从Target表获取正确的目标类型
+      final targetQuery = await _firestore
+          .collection('Target')
+          .where('UserID', isEqualTo: userId)
+          .get();
+      
+      String goal = 'maintain'; // 默认值
+      if (targetQuery.docs.isNotEmpty) {
+        final targetData = targetQuery.docs.first.data();
+        goal = targetData['TargetType'] ?? 'maintain';
+      }
+      
       final gender = userData['Gender'] ?? 'male';
       
       // 检查是否需要调整
@@ -642,16 +694,16 @@ class CalorieAdjustmentService {
       double deviation = intakeAmount - baseTarget;
       double newTarget = baseTarget - deviation;
       
-      // 应用安全边界
-      newTarget = _applySafetyBoundaries(newTarget, goal, bmr, tdee, gender);
-      
-      // 检查调整幅度
-      if ((newTarget - baseTarget).abs() < 25) {
+      // 先检查调整幅度，如果太小则不进行调整
+      if ((newTarget - baseTarget).abs() < 50) {
         return {
           'success': false,
           'reason': 'Adjustment too small for $date',
         };
       }
+      
+      // 应用安全边界
+      newTarget = _applySafetyBoundaries(newTarget, goal, bmr, tdee, gender);
       
       // 创建指定日期的调整记录
       await _createAdjustmentRecordForDate(
@@ -729,7 +781,7 @@ class CalorieAdjustmentService {
     print('Created adjustment record for $date: $previousTarget -> $newTarget');
   }
 
-} 
+}
 
 
 

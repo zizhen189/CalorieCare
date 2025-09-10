@@ -755,7 +755,23 @@ class PasswordResetService {
     }
 
     try {
-      print('Sending password reset email to: $email');
+      print('Checking if user exists in database: $email');
+      
+      // 首先检查用户是否存在于Firestore数据库中
+      final userQuery = await _firestore
+          .collection('User')
+          .where('Email', isEqualTo: email)
+          .get();
+
+      if (userQuery.docs.isEmpty) {
+        print('User not found in database: $email');
+        return {
+          'success': false,
+          'error': 'No account found with this email address. Please check your email or sign up for a new account.'
+        };
+      }
+      
+      print('User found in database, sending password reset email to: $email');
       
       await _auth.sendPasswordResetEmail(email: email);
       

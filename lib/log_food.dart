@@ -31,10 +31,13 @@ class LogFoodPage extends StatefulWidget {
 class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin {
   TextEditingController _searchController = TextEditingController();
   List<DocumentSnapshot> _foods = [];
+  List<DocumentSnapshot> _allSearchResults = [];
   bool _isLoading = false;
   bool _isAiLoading = false;
   bool _showAiButton = false;
+  bool _isLoadingMore = false;
   String _lastSearchQuery = '';
+  int _currentDisplayCount = 10;
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
@@ -103,6 +106,8 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
       setState(() {
         _showAiButton = false;
         _lastSearchQuery = '';
+        _allSearchResults = [];
+        _currentDisplayCount = 10;
       });
       return;
     }
@@ -110,10 +115,12 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
     setState(() => _isLoading = true);
     
     try {
-      List<DocumentSnapshot> results = await _performEfficientSearch(query);
+      List<DocumentSnapshot> results = await _performEfficientSearch(query, limit: 100);
       
       setState(() {
-        _foods = results;
+        _allSearchResults = results;
+        _currentDisplayCount = 10;
+        _foods = results.take(_currentDisplayCount).toList();
         _isLoading = false;
         _showAiButton = results.isEmpty && query.isNotEmpty;
         _lastSearchQuery = query;
@@ -124,24 +131,26 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
     }
   }
 
-  Future<List<DocumentSnapshot>> _performEfficientSearch(String query) async {
-    final String lowerQuery = query.toLowerCase();
+  Future<List<DocumentSnapshot>> _performEfficientSearch(String query, {int limit = 100}) async {
+    final String lowerQuery = query.toLowerCase().trim();
     final String upperQuery = query.toUpperCase();
     final String capitalizedQuery = query.substring(0, 1).toUpperCase() + 
         (query.length > 1 ? query.substring(1).toLowerCase() : '');
     
     final Map<String, DocumentSnapshot> uniqueResults = {};
     
+    // Exact match
     final exactMatch = await FirebaseFirestore.instance
         .collection('Food')
         .where('FoodName', isEqualTo: query)
-        .limit(5)
+        .limit(10)
         .get();
     
     for (var doc in exactMatch.docs) {
       uniqueResults[doc.id] = doc;
     }
     
+    // Multiple case variations matching
     final searchVariations = [query, lowerQuery, upperQuery, capitalizedQuery];
     
     for (String searchTerm in searchVariations) {
@@ -149,7 +158,7 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
           .collection('Food')
           .where('FoodName', isGreaterThanOrEqualTo: searchTerm)
           .where('FoodName', isLessThanOrEqualTo: '$searchTerm\uf8ff')
-          .limit(10)
+          .limit(30)
           .get();
       
       for (var doc in startsWithQuery.docs) {
@@ -157,15 +166,21 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
       }
     }
     
-    if (uniqueResults.length < 5) {
+    // Smart multi-word search
+    if (uniqueResults.length < 10) {
+      await _performMultiWordSearch(query, uniqueResults);
+    }
+    
+    // Keyword search
+    if (uniqueResults.length < 10) {
       final keywords = _generateSearchKeywords(query);
       
-      for (String keyword in keywords.take(3)) {
+      for (String keyword in keywords.take(5)) {
         try {
           final keywordQuery = await FirebaseFirestore.instance
               .collection('Food')
               .where('SearchKeywords', arrayContains: keyword.toLowerCase())
-              .limit(8)
+              .limit(25)
               .get();
           
           for (var doc in keywordQuery.docs) {
@@ -177,16 +192,17 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
       }
     }
     
-    if (uniqueResults.length < 3) {
+    // Full search as fallback option
+    if (uniqueResults.length < 5) {
       final fallbackQuery = await FirebaseFirestore.instance
           .collection('Food')
-          .limit(50)
+          .limit(200)
           .get();
       
       final filtered = fallbackQuery.docs.where((doc) {
         String name = (doc['FoodName'] ?? '').toString().toLowerCase();
-        return name.contains(lowerQuery);
-      }).take(10);
+        return _isMatchingFoodName(name, lowerQuery);
+      }).take(20);
       
       for (var doc in filtered) {
         uniqueResults[doc.id] = doc;
@@ -198,23 +214,123 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
       String nameA = (a['FoodName'] ?? '').toString().toLowerCase();
       String nameB = (b['FoodName'] ?? '').toString().toLowerCase();
       
-      if (nameA == lowerQuery && nameB != lowerQuery) return -1;
-      if (nameB == lowerQuery && nameA != lowerQuery) return 1;
+      // Calculate match score
+      double scoreA = _calculateMatchScore(nameA, lowerQuery);
+      double scoreB = _calculateMatchScore(nameB, lowerQuery);
       
-      bool aStartsWith = nameA.startsWith(lowerQuery);
-      bool bStartsWith = nameB.startsWith(lowerQuery);
-      if (aStartsWith && !bStartsWith) return -1;
-      if (bStartsWith && !aStartsWith) return 1;
+      if (scoreA != scoreB) {
+        return scoreB.compareTo(scoreA); // 降序排列，分数高的在前
+      }
       
       return nameA.compareTo(nameB);
     });
     
-    return sortedResults.take(10).toList();
+    return sortedResults.take(limit).toList();
+  }
+
+  // Smart multi-word search
+  Future<void> _performMultiWordSearch(String query, Map<String, DocumentSnapshot> uniqueResults) async {
+    final words = query.toLowerCase().trim().split(' ').where((w) => w.isNotEmpty).toList();
+    
+    if (words.length <= 1) return;
+    
+    // Get more data for local filtering
+    final allFoodsQuery = await FirebaseFirestore.instance
+        .collection('Food')
+        .limit(200)
+        .get();
+    
+    for (var doc in allFoodsQuery.docs) {
+      String foodName = (doc['FoodName'] ?? '').toString().toLowerCase();
+      
+      // Remove punctuation and normalize the food name for better matching
+      String normalizedFoodName = foodName.replaceAll(RegExp(r'[,\-_\.]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+      
+      // Check if contains all keywords (order independent)
+      bool containsAllWords = words.every((word) => normalizedFoodName.contains(word));
+      
+      if (containsAllWords) {
+        uniqueResults[doc.id] = doc;
+      }
+    }
+  }
+  
+  // Smart matching judgment
+  bool _isMatchingFoodName(String foodName, String query) {
+    final queryWords = query.split(' ').where((w) => w.isNotEmpty).toList();
+    
+    // Normalize food name by removing punctuation
+    String normalizedFoodName = foodName.replaceAll(RegExp(r'[,\-_\.]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+    
+    // Single word matching
+    if (queryWords.length == 1) {
+      return normalizedFoodName.contains(query);
+    }
+    
+    // Multi-word matching - must contain all keywords (order independent)
+    return queryWords.every((word) => normalizedFoodName.contains(word.toLowerCase()));
+  }
+  
+  // 计算匹配分数
+  double _calculateMatchScore(String foodName, String query) {
+    double score = 0.0;
+    
+    // Normalize food name and query by removing punctuation
+    String normalizedFoodName = foodName.replaceAll(RegExp(r'[,\-_\.]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+    String normalizedQuery = query.replaceAll(RegExp(r'[,\-_\.]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+    
+    // Exact match gets highest score
+    if (normalizedFoodName == normalizedQuery) {
+      return 100.0;
+    }
+    
+    // Starts with match gets high score
+    if (normalizedFoodName.startsWith(normalizedQuery)) {
+      score += 80.0;
+    }
+    
+    // Contains match
+    if (normalizedFoodName.contains(normalizedQuery)) {
+      score += 60.0;
+    }
+    
+    final queryWords = normalizedQuery.split(' ').where((w) => w.isNotEmpty).toList();
+    if (queryWords.length > 1) {
+      // Multi-word search scoring
+      int matchedWords = 0;
+      int totalWords = queryWords.length;
+      
+      for (String word in queryWords) {
+        if (normalizedFoodName.contains(word)) {
+          matchedWords++;
+          // Extra points if word is at the beginning
+          if (normalizedFoodName.startsWith(word)) {
+            score += 20.0;
+          } else {
+            score += 10.0;
+          }
+        }
+      }
+      
+      // Extra bonus for matching all words
+      if (matchedWords == totalWords) {
+        score += 30.0;
+      }
+      
+      // Match ratio score
+      score += (matchedWords / totalWords) * 20.0;
+    }
+    
+    // Length factor (shorter names get priority)
+    double lengthFactor = 100.0 / (normalizedFoodName.length + 1);
+    score += lengthFactor * 0.1;
+    
+    return score;
   }
 
   List<String> _generateSearchKeywords(String query) {
     final keywords = <String>[];
-    final words = query.toLowerCase().split(' ');
+    final words = query.toLowerCase().split(' ').where((w) => w.isNotEmpty).toList();
     
     keywords.addAll(words);
     
@@ -227,6 +343,20 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
     }
     
     return keywords.toSet().toList();
+  }
+
+  void _loadMoreResults() async {
+    if (_isLoadingMore || _allSearchResults.length <= _currentDisplayCount) return;
+    
+    setState(() => _isLoadingMore = true);
+    
+    await Future.delayed(const Duration(milliseconds: 300)); // Reduce loading delay
+    
+    setState(() {
+      _currentDisplayCount = (_currentDisplayCount + 15).clamp(0, _allSearchResults.length); // Increase loading count per batch
+      _foods = _allSearchResults.take(_currentDisplayCount).toList();
+      _isLoadingMore = false;
+    });
   }
 
   void _showErrorSnackBar(String message) {
@@ -366,12 +496,19 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
       return _buildEmptyState();
     }
 
+    bool hasMoreResults = _allSearchResults.length > _currentDisplayCount;
+    
     return ListView.builder(
       padding: const EdgeInsets.symmetric(horizontal: 20),
-      itemCount: _foods.length,
+      itemCount: _foods.length + (hasMoreResults ? 1 : 0),
       itemBuilder: (context, index) {
-        final food = _foods[index];
-        return _buildFoodCard(food, index);
+        if (index < _foods.length) {
+          final food = _foods[index];
+          return _buildFoodCard(food, index);
+        } else {
+          // 显示更多按钮
+          return _buildLoadMoreButton();
+        }
       },
     );
   }
@@ -467,6 +604,62 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
                     size: 24,
                   ),
                 ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLoadMoreButton() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20, top: 10),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: _isLoadingMore ? null : _loadMoreResults,
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+            decoration: BoxDecoration(
+              color: primaryGreen.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: primaryGreen.withOpacity(0.3)),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (_isLoadingMore) ...[
+                  SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(primaryGreen),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Loading more...',
+                    style: TextStyle(
+                      color: primaryGreen,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ] else ...[
+                  Icon(Icons.expand_more, color: primaryGreen, size: 24),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Show more results (${_allSearchResults.length - _currentDisplayCount})',
+                    style: TextStyle(
+                      color: primaryGreen,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -698,15 +891,15 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
 
     try {
       final prompt = '''
-请为食物 '$foodName'，基于一份标准份量（约100克），提供其营养信息。
-请以JSON格式返回，包含以下字段：
-- calories: 卡路里 (kcal)
-- protein: 蛋白质 (g)
-- carbs: 碳水化合物 (g)
-- fat: 脂肪 (g)
-- unit: 100 (固定值)
+Please provide nutrition information for the food '$foodName' based on a standard serving size (approximately 100 grams).
+Please return in JSON format with the following fields:
+- calories: Calories (kcal)
+- protein: Protein (g)
+- carbs: Carbohydrates (g)
+- fat: Fat (g)
+- unit: 100 (fixed value)
 
-示例格式：
+Example format:
 {
   "calories": 250,
   "protein": 12.5,
@@ -1131,7 +1324,7 @@ class _FoodModalWidget extends StatefulWidget {
 
 class _FoodModalWidgetState extends State<_FoodModalWidget> {
   late TextEditingController _qtyController;
-  int _quantity = 0;
+  double _quantity = 0.0;
   late int _dbQty;
   late double _cal, _carb, _protein, _fat;
 
@@ -1159,7 +1352,7 @@ class _FoodModalWidgetState extends State<_FoodModalWidget> {
   }
 
   void _onTextChanged() {
-    final newValue = int.tryParse(_qtyController.text) ?? 0;
+    final newValue = double.tryParse(_qtyController.text) ?? 0.0;
     if (_quantity != newValue) {
       setState(() {
         _quantity = newValue;
@@ -1305,16 +1498,27 @@ class _FoodModalWidgetState extends State<_FoodModalWidget> {
                   ),
                   const SizedBox(width: 16),
                   Expanded(
-                    child: TextField(
+                    child: TextFormField(
                       controller: _qtyController,
-                      keyboardType: TextInputType.number,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
                       textAlign: TextAlign.center,
                       textInputAction: TextInputAction.done,
+                      autovalidateMode: AutovalidateMode.onUserInteraction,
                       style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
                         color: Color(0xFF2E2E2E),
                       ),
+                      validator: (value) {
+                         if (value == null || value.isEmpty) {
+                           return 'Please enter weight';
+                         }
+                         final quantity = double.tryParse(value);
+                         if (quantity == null || quantity < 0.1) {
+                           return 'Minimum 0.1g required';
+                         }
+                         return null;
+                       },
                       decoration: InputDecoration(
                         hintText: 'Enter weight (g)',
                         hintStyle: TextStyle(
@@ -1329,9 +1533,17 @@ class _FoodModalWidgetState extends State<_FoodModalWidget> {
                           borderRadius: BorderRadius.circular(12),
                           borderSide: BorderSide(color: Color(0xFF4CAF50), width: 2),
                         ),
+                        errorBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: Colors.red, width: 1),
+                        ),
+                        focusedErrorBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: Colors.red, width: 2),
+                        ),
                         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       ),
-                      onSubmitted: (value) {
+                      onFieldSubmitted: (value) {
                         // 确保提交时数值保持
                         FocusScope.of(context).unfocus();
                       },
@@ -1348,8 +1560,8 @@ class _FoodModalWidgetState extends State<_FoodModalWidget> {
               width: double.infinity,
               child: ElevatedButton(
                 onPressed: () async {
-                  if (_quantity < 1) {
-                    widget.onError('Please enter a valid weight (minimum 1g)!');
+                  if (_quantity < 0.1) {
+                    widget.onError('Please enter a valid weight (minimum 0.1g)!');
                     return;
                   }
 
@@ -1362,7 +1574,7 @@ class _FoodModalWidgetState extends State<_FoodModalWidget> {
                   Navigator.pop(context);
                   await widget.onSave(
                     widget.food,
-                    _quantity,
+                    _quantity.round(),
                     finalCal,
                     finalProtein,
                     finalCarb,

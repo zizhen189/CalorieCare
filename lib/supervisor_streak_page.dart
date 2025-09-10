@@ -87,15 +87,18 @@ class _SupervisorStreakPageState extends State<SupervisorStreakPage> with Single
       final currentUserId = currentUser.userID ?? '';
 
       Map<String, int> streaks = {};
+      List<Map<String, dynamic>> validSupervisors = [];
       
-      // Load supervision data for each supervisor
+      // Load supervision data for each supervisor and filter out rejected ones
       for (var supervisor in widget.supervisors) {
         final supervisionId = supervisor['supervisionId'];
         
         // Get supervision data directly from Supervision collection
+        // Only get accepted supervisions to filter out rejected ones
         final supervisionQuery = await db
             .collection('Supervision')
             .where('SupervisionID', isEqualTo: supervisionId)
+            .where('Status', isEqualTo: 'accepted')
             .get();
 
         if (supervisionQuery.docs.isNotEmpty) {
@@ -109,13 +112,19 @@ class _SupervisorStreakPageState extends State<SupervisorStreakPage> with Single
           streaks[supervisionId] = currentStreakDays;
           supervisor['currentStreakDays'] = currentStreakDays;
           supervisor['lastLoggedDate'] = lastLoggedDate;
+          
+          // Only add to valid supervisors if status is accepted
+          validSupervisors.add(supervisor);
         } else {
-          // If no supervision record found, set default values
-          streaks[supervisionId] = 0;
-          supervisor['currentStreakDays'] = 0;
-          supervisor['lastLoggedDate'] = null;
+          // If no accepted supervision record found, skip this supervisor
+          print('Skipping rejected supervision: $supervisionId');
+          continue;
         }
       }
+
+      // Update the supervisors list to only include accepted ones
+      widget.supervisors.clear();
+      widget.supervisors.addAll(validSupervisors);
 
       setState(() {
         _supervisorStreaks = streaks;

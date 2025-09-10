@@ -148,8 +148,9 @@ class _OobCodeVerificationPageState extends State<OobCodeVerificationPage> {
         child: SafeArea(
           child: Padding(
             padding: const EdgeInsets.all(20),
-            child: Column(
-              children: [
+            child: SingleChildScrollView(
+              child: Column(
+                children: [
                 const SizedBox(height: 40),
                 
                 // Email Icon
@@ -193,16 +194,29 @@ class _OobCodeVerificationPageState extends State<OobCodeVerificationPage> {
                 const SizedBox(height: 40),
                 TextField(
                   controller: _codeController,
+                  style: const TextStyle(
+                    color: Colors.black,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                  ),
                   decoration: InputDecoration(
                     labelText: 'Verification Code or Reset Link',
                     hintText: 'Paste code or entire link from email',
+                    labelStyle: const TextStyle(
+                      color: Colors.grey,
+                      fontSize: 16,
+                    ),
+                    hintStyle: const TextStyle(
+                      color: Colors.grey,
+                      fontSize: 14,
+                    ),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(10),
                     ),
                     filled: true,
                     fillColor: Colors.white,
                     suffixIcon: IconButton(
-                      icon: Icon(Icons.paste),
+                      icon: const Icon(Icons.paste, color: Colors.grey),
                       onPressed: () async {
                         final data = await Clipboard.getData('text/plain');
                         if (data?.text != null) {
@@ -273,7 +287,8 @@ class _OobCodeVerificationPageState extends State<OobCodeVerificationPage> {
                   ),
                 ),
                 const SizedBox(height: 20), // 添加底部间距
-              ],
+                ],
+              ),
             ),
           ),
         ),

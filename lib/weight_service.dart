@@ -104,6 +104,11 @@ class WeightService {
   // 为特定日期记录体重并检查目标达成
   Future<Map<String, dynamic>> recordWeightForDate(String userId, double weight, String dateStr) async {
     try {
+      print('=== WEIGHT SERVICE: recordWeightForDate ===');
+      print('User ID: $userId');
+      print('Weight: $weight');
+      print('Date: $dateStr');
+      
       final weightId = await _generateWeightID();
       
       await _firestore.collection('WeightRecord').add({
@@ -113,21 +118,34 @@ class WeightService {
         'RecordDate': dateStr,
       });
 
+      print('✅ Weight record added to database');
+
       // Only check goal achievement if recording for today
       final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
       bool goalAchieved = false;
       
+      print('Today: $today');
+      print('Record date: $dateStr');
+      print('Is today: ${dateStr == today}');
+      
       if (dateStr == today) {
+        print('Checking goal achievement for today...');
         goalAchieved = await _goalService.checkAndProcessGoalAchievement(userId, weight);
+        print('Goal achieved result: $goalAchieved');
+      } else {
+        print('Not today, skipping goal achievement check');
       }
       
-      return {
+      final result = {
         'success': true,
         'goalAchieved': goalAchieved,
         'weight': weight,
       };
+      
+      print('Returning result: $result');
+      return result;
     } catch (e) {
-      print('Error recording weight for date: $e');
+      print('❌ Error recording weight for date: $e');
       return {
         'success': false,
         'error': e.toString(),

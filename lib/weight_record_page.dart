@@ -3,6 +3,7 @@ import 'package:caloriecare/weight_service.dart';
 import 'package:caloriecare/user_model.dart';
 import 'package:caloriecare/session_service.dart';
 import 'package:caloriecare/goal_achievement_page.dart'; // Added import for GoalAchievementPage
+import 'package:caloriecare/utils/weight_validator.dart';
 
 class WeightRecordPage extends StatefulWidget {
   final UserModel user;
@@ -24,9 +25,26 @@ class _WeightRecordPageState extends State<WeightRecordPage> {
   }
 
   Future<void> _recordWeight() async {
-    if (_weightController.text.isEmpty) {
+    // Validate weight input
+    final validationResult = WeightValidator.validateWeightString(_weightController.text);
+    if (!validationResult.isValid) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a weight')),
+        SnackBar(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(validationResult.errorMessage),
+              if (validationResult.suggestion.isNotEmpty)
+                Text(
+                  validationResult.suggestion,
+                  style: const TextStyle(fontSize: 12, color: Colors.white70),
+                ),
+            ],
+          ),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 4),
+        ),
       );
       return;
     }
@@ -70,7 +88,7 @@ class _WeightRecordPageState extends State<WeightRecordPage> {
               ),
             );
           } else {
-            Navigator.of(context).pop(true); // 返回true表示记录成功
+            Navigator.of(context).pop(true); // Return true to indicate successful recording
           }
         }
       } else {
@@ -118,7 +136,7 @@ class _WeightRecordPageState extends State<WeightRecordPage> {
             children: [
             const SizedBox(height: 40),
             
-            // 图标
+            // Icon
             Icon(
               Icons.monitor_weight_outlined,
               size: 80,
@@ -127,7 +145,7 @@ class _WeightRecordPageState extends State<WeightRecordPage> {
             
             const SizedBox(height: 30),
             
-            // 标题
+            // Title
             const Text(
               'Today\'s Weight',
               style: TextStyle(
@@ -151,13 +169,14 @@ class _WeightRecordPageState extends State<WeightRecordPage> {
             
             const SizedBox(height: 40),
             
-            // 体重输入框
+            // Weight input field
             TextField(
               controller: _weightController,
               keyboardType: TextInputType.numberWithOptions(decimal: true),
               decoration: InputDecoration(
                 labelText: 'Weight (kg)',
-                hintText: 'e.g. 65.5',
+                hintText: WeightValidator.getWeightRangeHint(),
+                helperText: 'Please enter a reasonable weight value',
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
@@ -172,7 +191,7 @@ class _WeightRecordPageState extends State<WeightRecordPage> {
             
             const SizedBox(height: 40),
             
-            // 记录按钮
+            // Record button
             ElevatedButton(
               onPressed: _isLoading ? null : _recordWeight,
               style: ElevatedButton.styleFrom(
@@ -200,7 +219,7 @@ class _WeightRecordPageState extends State<WeightRecordPage> {
             
             const SizedBox(height: 20),
             
-            // 跳过按钮
+            // Skip button
             TextButton(
               onPressed: () => Navigator.of(context).pop(false),
               child: const Text(

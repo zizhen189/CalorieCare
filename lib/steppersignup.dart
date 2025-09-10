@@ -7,6 +7,7 @@ import 'package:caloriecare/user_model.dart';
 import 'package:caloriecare/loading_utils.dart';
 import 'package:caloriecare/session_service.dart';
 import 'package:caloriecare/weight_service.dart';
+import 'package:caloriecare/utils/weight_validator.dart';
 
 class StepperSignUpPage extends StatefulWidget {
   const StepperSignUpPage({super.key});
@@ -1114,7 +1115,7 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
                 ),
                 onChanged: (value) {
                   final newWeight = double.tryParse(value);
-                  if (newWeight != null && newWeight >= 35.0 && newWeight <= 150.0) {
+                  if (newWeight != null && WeightValidator.isWeightInRange(newWeight)) {
                     setState(() {
                       weight = newWeight;
                     });

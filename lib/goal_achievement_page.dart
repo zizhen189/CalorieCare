@@ -30,6 +30,11 @@ class _GoalAchievementPageState extends State<GoalAchievementPage>
   void initState() {
     super.initState();
     
+    print('=== GOAL ACHIEVEMENT PAGE INIT ===');
+    print('Achieved weight: ${widget.achievedWeight}');
+    print('New TDEE: ${widget.newTDEE}');
+    print('User: ${widget.user?.username}');
+    
     _fadeController = AnimationController(
       duration: const Duration(milliseconds: 1500),
       vsync: this,

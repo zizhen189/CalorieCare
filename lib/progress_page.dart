@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:caloriecare/profile_page.dart';
 import 'package:caloriecare/session_service.dart';
+import 'package:caloriecare/utils/weight_validator.dart';
 import 'goal_achievement_page.dart';
 import 'package:caloriecare/goal_achievement_service.dart';
 import 'package:caloriecare/refresh_manager.dart';
@@ -1823,7 +1824,11 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
     
     final minWeight = weights.reduce((a, b) => a < b ? a : b);
     // 最小值比实际数据的最低值再低5kg，但不低于30kg，并确保是5的倍数
-    final calculatedMin = (minWeight - 5).clamp(30.0, minWeight - 1);
+    final targetMin = minWeight - 5;
+    // 确保最小值不低于30kg，最大值不超过minWeight-1
+    final minLimit = 30.0;
+    final maxLimit = minWeight - 1;
+    final calculatedMin = targetMin.clamp(minLimit, maxLimit > minLimit ? maxLimit : minLimit);
     final flooredMin = calculatedMin.floor();
     // 向下取整到最近的5的倍数
     return (flooredMin ~/ 5 * 5).toDouble();
@@ -1946,10 +1951,12 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
                   TextField(
                     controller: weightController,
                     keyboardType: TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: 'Weight (kg)',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.monitor_weight),
+                      hintText: WeightValidator.getWeightRangeHint(),
+                      helperText: 'Please enter a reasonable weight value',
+                      border: const OutlineInputBorder(),
+                      prefixIcon: const Icon(Icons.monitor_weight),
                     ),
                   ),
                 ],
@@ -1961,27 +1968,35 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
                 ),
                 ElevatedButton(
                   onPressed: () async {
-                    if (weightController.text.isNotEmpty) {
-                      final weight = double.tryParse(weightController.text);
-                      if (weight != null && weight > 0) {
-                        await _addWeightRecord(selectedDate, weight);
-                        Navigator.of(context).pop();
-                      } else {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Please enter a valid weight'),
-                            backgroundColor: Colors.red,
-                          ),
-                        );
-                      }
-                    } else {
+                    // 验证体重输入
+                    final validationResult = WeightValidator.validateWeightString(weightController.text);
+                    if (!validationResult.isValid) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Please enter weight'),
+                        SnackBar(
+                          content: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(validationResult.errorMessage),
+                              if (validationResult.suggestion.isNotEmpty)
+                                Text(
+                                  validationResult.suggestion,
+                                  style: const TextStyle(fontSize: 12, color: Colors.white70),
+                                ),
+                            ],
+                          ),
                           backgroundColor: Colors.red,
+                          duration: const Duration(seconds: 4),
                         ),
                       );
+                      return;
                     }
+                    
+                    final weight = double.parse(weightController.text);
+                    // 先关闭对话框
+                    Navigator.of(context).pop();
+                    // 然后添加体重记录
+                    await _addWeightRecord(selectedDate, weight);
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF5AA162),
@@ -2016,24 +2031,52 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
       
       final result = await _weightService.recordWeightForDate(userId, weight, dateStr);
       
+      print('=== PROGRESS PAGE: _addWeightRecord ===');
+      print('Weight service result: $result');
+      print('Success: ${result['success']}');
+      print('Goal achieved: ${result['goalAchieved']}');
+      
       if (result['success']) {
         // 重新加载数据
         _loadWeightData();
         
         // Check if goal was achieved
         if (result['goalAchieved'] == true) {
+          print('🎉 Goal achieved! Navigating to Goal Achievement Page...');
           // Navigate to goal achievement page
           final updatedUser = await SessionService.getUserSession();
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (context) => GoalAchievementPage(
-                achievedWeight: weight,
-                newTDEE: updatedUser?.tdee ?? 2000,
-                user: updatedUser,
+          print('Updated user: ${updatedUser?.goal}, TDEE: ${updatedUser?.tdee}');
+          print('Updated user details: ${updatedUser?.userID}, ${updatedUser?.username}');
+          
+          if (updatedUser == null) {
+            print('❌ Updated user is null, cannot navigate');
+            return;
+          }
+          
+          try {
+            print('🚀 Starting navigation to Goal Achievement Page...');
+            print('Context: $context');
+            print('Navigator: ${Navigator.of(context)}');
+            
+            await Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) {
+                  print('Building Goal Achievement Page...');
+                  return GoalAchievementPage(
+                    achievedWeight: weight,
+                    newTDEE: updatedUser.tdee,
+                    user: updatedUser,
+                  );
+                },
               ),
-            ),
-          );
+            );
+            print('✅ Navigation to Goal Achievement Page completed');
+          } catch (e) {
+            print('❌ Error during navigation: $e');
+            print('Error stack trace: ${StackTrace.current}');
+          }
         } else {
+          print('❌ Goal not achieved, showing success message');
           // 触发刷新
           RefreshManagerHelper.refreshAfterWeightRecord();
           ScaffoldMessenger.of(context).showSnackBar(
@@ -2468,10 +2511,12 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
                   TextField(
                     controller: weightController,
                     keyboardType: TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: 'Weight (kg)',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.monitor_weight),
+                      hintText: WeightValidator.getWeightRangeHint(),
+                      helperText: 'Please enter a reasonable weight value',
+                      border: const OutlineInputBorder(),
+                      prefixIcon: const Icon(Icons.monitor_weight),
                     ),
                   ),
                 ],
@@ -2483,27 +2528,33 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
                 ),
                 ElevatedButton(
                   onPressed: () async {
-                    if (weightController.text.isNotEmpty) {
-                      final weight = double.tryParse(weightController.text);
-                      if (weight != null && weight > 0) {
-                        await _updateWeightRecord(record, selectedDate, weight);
-                        Navigator.of(context).pop();
-                      } else {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Please enter a valid weight'),
-                            backgroundColor: Colors.red,
-                          ),
-                        );
-                      }
-                    } else {
+                    // 验证体重输入
+                    final validationResult = WeightValidator.validateWeightString(weightController.text);
+                    if (!validationResult.isValid) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Please enter weight'),
+                        SnackBar(
+                          content: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(validationResult.errorMessage),
+                              if (validationResult.suggestion.isNotEmpty)
+                                Text(
+                                  validationResult.suggestion,
+                                  style: const TextStyle(fontSize: 12, color: Colors.white70),
+                                ),
+                            ],
+                          ),
                           backgroundColor: Colors.red,
+                          duration: const Duration(seconds: 4),
                         ),
                       );
+                      return;
                     }
+                    
+                    final weight = double.parse(weightController.text);
+                    await _updateWeightRecord(record, selectedDate, weight);
+                    Navigator.of(context).pop();
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF5AA162),

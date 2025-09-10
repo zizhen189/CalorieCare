@@ -9,36 +9,49 @@ class GoalAchievementService {
 
   /// Check if user has achieved their goal based on current weight
   bool hasAchievedGoal(UserModel user, double currentWeight) {
-    print('Checking goal achievement:');
-    print('User goal: ${user.goal}');
+    print('=== GOAL ACHIEVEMENT CHECK ===');
+    print('User goal: "${user.goal}"');
     print('Current weight: $currentWeight');
     print('Target weight: ${user.targetWeight}');
+    print('Goal type check: ${user.goal.runtimeType}');
     
     if (user.goal == 'maintain') {
-      print('User is in maintain mode, no goal to achieve');
+      print('❌ User is in maintain mode, no goal to achieve');
       return false;
     }
     
-    if (user.goal == 'loss') {
+    if (user.goal == 'loss' || user.goal == 'lose') {
       final achieved = currentWeight <= user.targetWeight;
       print('Loss goal: $currentWeight <= ${user.targetWeight} = $achieved');
+      if (achieved) {
+        print('🎉 LOSS GOAL ACHIEVED!');
+      } else {
+        print('❌ Loss goal not yet achieved');
+      }
       return achieved;
     } else if (user.goal == 'gain') {
       final achieved = currentWeight >= user.targetWeight;
       print('Gain goal: $currentWeight >= ${user.targetWeight} = $achieved');
+      if (achieved) {
+        print('🎉 GAIN GOAL ACHIEVED!');
+      } else {
+        print('❌ Gain goal not yet achieved');
+      }
       return achieved;
     }
     
-    print('Unknown goal type: ${user.goal}');
+    print('❌ Unknown goal type: "${user.goal}"');
     return false;
   }
 
   /// Process goal achievement and update all necessary data
   Future<Map<String, dynamic>> processGoalAchievement(String userId, double achievedWeight) async {
     try {
+      print('=== PROCESSING GOAL ACHIEVEMENT ===');
       print('Processing goal achievement for user: $userId, weight: $achievedWeight');
       
       // Get current user data
+      print('Step 1: Getting user data from Firestore...');
       final userQuery = await _firestore
           .collection('User')
           .where('UserID', isEqualTo: userId)
@@ -46,33 +59,35 @@ class GoalAchievementService {
           .get();
 
       if (userQuery.docs.isEmpty) {
+        print('❌ User not found in Firestore');
         return {'success': false, 'error': 'User not found'};
       }
 
+      print('✅ User found in Firestore');
       final userDoc = userQuery.docs.first;
       final userData = userDoc.data();
       
       // Calculate new TDEE for maintenance
+      print('Step 2: Calculating new TDEE...');
       final newTDEE = _calculateTDEE(userData, achievedWeight);
+      print('New TDEE: $newTDEE');
       
-      // Update User collection
-      await userDoc.reference.update({
-        'Goal': 'maintain',
-        'Weight': achievedWeight,
-        'TargetWeight': achievedWeight,
-        'UpdatedAt': FieldValue.serverTimestamp(),
-      });
-
-      // Update Target collection
+      // Update Target collection only (not User collection)
+      print('Step 3: Updating Target collection...');
       await _updateTargetCollection(userId, achievedWeight, newTDEE);
+      print('✅ Target collection updated');
       
       // Handle active calorie adjustments
+      print('Step 4: Handling active calorie adjustments...');
       await _handleActiveAdjustments(userId, newTDEE);
+      print('✅ Active calorie adjustments handled');
       
       // Update session data
+      print('Step 5: Updating session data...');
       await _updateSessionData(userId, achievedWeight, newTDEE);
+      print('✅ Session data updated');
       
-      print('Goal achievement processed successfully');
+      print('🎉 Goal achievement processed successfully!');
       return {
         'success': true,
         'newTDEE': newTDEE,
@@ -81,7 +96,8 @@ class GoalAchievementService {
       };
       
     } catch (e) {
-      print('Error processing goal achievement: $e');
+      print('❌ Error processing goal achievement: $e');
+      print('Error stack trace: ${StackTrace.current}');
       return {'success': false, 'error': 'Failed to process goal achievement: $e'};
     }
   }
@@ -206,16 +222,15 @@ class GoalAchievementService {
       
       print('Handling active adjustments for user: $userId, today: $todayStr');
       
-      // Get all active adjustments for the user
-      final activeAdjustmentsQuery = await _firestore
+      // Get all adjustments for the user
+      final adjustmentsQuery = await _firestore
           .collection('CalorieAdjustment')
           .where('UserID', isEqualTo: userId)
-          .where('IsActive', isEqualTo: true)
           .get();
 
-      print('Found ${activeAdjustmentsQuery.docs.length} active adjustments');
+      print('Found ${adjustmentsQuery.docs.length} adjustments');
 
-      for (var doc in activeAdjustmentsQuery.docs) {
+      for (var doc in adjustmentsQuery.docs) {
         final data = doc.data();
         final adjustDate = data['AdjustDate'] as String?;
         
@@ -225,13 +240,11 @@ class GoalAchievementService {
             'AdjustTargetCalories': tdee.round(),
             'UpdatedAt': FieldValue.serverTimestamp(),
           });
-          print('Updated today\'s active adjustment to TDEE: ${tdee.round()}');
-        } else {
-          // Deactivate other active adjustments
-          await doc.reference.update({'IsActive': false});
-          print('Deactivated adjustment for date: $adjustDate');
+          print('Updated today\'s adjustment to TDEE: ${tdee.round()}');
         }
       }
+      
+      print('Goal achievement day: Using new TDEE instead of adjustments');
       
     } catch (e) {
       print('Error handling active adjustments: $e');
@@ -243,26 +256,27 @@ class GoalAchievementService {
     try {
       final currentUser = await SessionService.getUserSession();
       if (currentUser != null && currentUser.userID == userId) {
+        // Only update weight and TDEE, keep original goal and targetWeight
         final updatedUser = UserModel(
           userID: currentUser.userID,
           username: currentUser.username,
           email: currentUser.email,
-          goal: 'maintain',
+          goal: currentUser.goal, // Keep original goal
           gender: currentUser.gender,
           height: currentUser.height,
-          weight: achievedWeight,
-          targetWeight: achievedWeight,
+          weight: achievedWeight, // Update current weight
+          targetWeight: currentUser.targetWeight, // Keep original target weight
           activityLevel: currentUser.activityLevel,
-          weeklyGoal: '0.0',
+          weeklyGoal: currentUser.weeklyGoal, // Keep original weekly goal
           bmi: currentUser.bmi,
-          dailyCalorieTarget: tdee,
-          tdee: tdee,
+          dailyCalorieTarget: tdee, // Update TDEE for maintenance
+          tdee: tdee, // Update TDEE for maintenance
           currentStreakDays: currentUser.currentStreakDays,
           lastLoggedDate: currentUser.lastLoggedDate,
         );
         
         await SessionService.saveUserSession(updatedUser);
-        print('Session data updated successfully');
+        print('Session data updated successfully (weight and TDEE only)');
       }
     } catch (e) {
       print('Error updating session data: $e');
@@ -272,38 +286,45 @@ class GoalAchievementService {
   /// Check for goal achievement when weight is recorded
   Future<bool> checkAndProcessGoalAchievement(String userId, double newWeight) async {
     try {
-      print('=== Goal Achievement Check ===');
+      print('=== GOAL ACHIEVEMENT CHECK START ===');
       print('User ID: $userId');
       print('New Weight: $newWeight');
       
       final currentUser = await SessionService.getUserSession();
       if (currentUser == null || currentUser.userID != userId) {
-        print('User session not found for goal achievement check');
+        print('❌ User session not found for goal achievement check');
+        print('Current user: ${currentUser?.userID}');
+        print('Expected user: $userId');
         return false;
       }
 
-      print('Current user goal: ${currentUser.goal}');
+      print('✅ User session found');
+      print('Current user goal: "${currentUser.goal}"');
       print('Current user target weight: ${currentUser.targetWeight}');
+      print('Current user weight: ${currentUser.weight}');
 
       // Only check if user has an active goal (not maintain)
       if (currentUser.goal == 'maintain') {
-        print('User is in maintain mode, skipping goal check');
+        print('❌ User is in maintain mode, skipping goal check');
         return false;
       }
 
+      print('✅ User has active goal, checking achievement...');
+      
       // Check if goal is achieved
       if (hasAchievedGoal(currentUser, newWeight)) {
         print('🎉 Goal achieved! Processing achievement...');
         final result = await processGoalAchievement(userId, newWeight);
         final success = result['success'] ?? false;
         print('Goal achievement processing result: $success');
+        print('Result details: $result');
         return success;
       } else {
-        print('Goal not yet achieved');
+        print('❌ Goal not yet achieved');
         return false;
       }
     } catch (e) {
-      print('Error checking goal achievement: $e');
+      print('❌ Error checking goal achievement: $e');
       return false;
     }
   }

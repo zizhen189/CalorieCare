@@ -192,15 +192,19 @@ class _RecogniteFoodPageState extends State<RecogniteFoodPage> {
           PerformanceMonitor.endTimer('compress_image');
 
           final String prompt = '''
-You are a nutritionist analyzing food images. Please follow this two-step process:
+You are a nutritionist analyzing food images. Please follow this three-step process:
 
-STEP 1: First, analyze the image and identify what foods you actually see in the image. Provide detailed nutritional information for each food item you identify.
+STEP 0: First, examine the image carefully and determine if there are any food items present in the image. If you do not see any food items (e.g., the image contains only non-food objects like tables, people, landscapes, etc.), respond with exactly: "NO_FOOD_DETECTED"
+
+STEP 1: If food is detected, analyze the image and identify what foods you actually see in the image. Provide detailed nutritional information for each food item you identify.
 
 STEP 2: Then, I will provide you with a food database, and you should check if any of your identified foods match items in the database.
 
-For now, please complete STEP 1 only. Analyze the food in this image and provide detailed nutritional information for each food item you identify.
+For now, please complete STEP 0 and STEP 1 only. First check if there is food in the image, then if food is present, analyze and provide detailed nutritional information for each food item you identify.
 
-For each distinct food item identified, provide ONLY the following format:
+If NO food is detected, respond with: "NO_FOOD_DETECTED"
+
+If food IS detected, provide for each distinct food item identified, ONLY the following format:
 
 **Food Item 1: [What you actually see in the image - be specific and descriptive]**
 - Portion: [number]g or [number]ml
@@ -217,6 +221,7 @@ Rules:
 5. Provide only the food items and their nutritional data in the exact format shown above
 6. Be as accurate as possible about what you actually see in the image
 7. Use descriptive names that clearly identify the food (e.g., "Nasi Lemak with coconut rice", "Fried chicken with curry sauce")
+8. If no food is detected, respond ONLY with "NO_FOOD_DETECTED"
 
 ''';
 
@@ -278,6 +283,26 @@ Rules:
               generatedContent = responseData['candidates'][0]['content']['parts'][0]['text'];
             }
             print('Gemini raw result: $generatedContent');
+            
+            // Check if no food was detected
+            if (generatedContent.trim().contains('NO_FOOD_DETECTED')) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('No food items detected in the image. Please take a photo containing food or use manual search instead.'),
+                  backgroundColor: Colors.orange,
+                  duration: Duration(seconds: 5),
+                  action: SnackBarAction(
+                    label: 'Manual Search',
+                    textColor: Colors.white,
+                    onPressed: () {
+                      // Navigate to manual search or show search dialog
+                      _showManualSearchDialog();
+                    },
+                  ),
+                ),
+              );
+              return;
+            }
             
             PerformanceMonitor.startTimer('parse_result');
             final foods = _parseGeminiResult(generatedContent);
@@ -575,39 +600,64 @@ Rules:
   double _calculateSimilarity(String str1, String str2) {
     if (str1 == str2) return 100.0;
     
-    // 检查是否包含关键词
-    List<String> words1 = str1.split(' ');
-    List<String> words2 = str2.split(' ');
+    // 标准化字符串：移除标点符号，转换为小写，分割单词
+    String normalizedStr1 = str1.toLowerCase().replaceAll(RegExp(r'[,\-_\.]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+    String normalizedStr2 = str2.toLowerCase().replaceAll(RegExp(r'[,\-_\.]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
     
-    int commonWords = 0;
+    // 完全匹配（标准化后）
+    if (normalizedStr1 == normalizedStr2) return 100.0;
+    
+    List<String> words1 = normalizedStr1.split(' ').where((w) => w.isNotEmpty && w.length > 1).toList();
+    List<String> words2 = normalizedStr2.split(' ').where((w) => w.isNotEmpty && w.length > 1).toList();
+    
+    if (words1.isEmpty || words2.isEmpty) return 0.0;
+    
+    // 计算词汇匹配分数
+    int exactMatches = 0;
+    int partialMatches = 0;
+    
     for (String word1 in words1) {
-      if (word1.length > 2) { // 忽略太短的词
-        for (String word2 in words2) {
-          if (word2.length > 2 && (word1.contains(word2) || word2.contains(word1))) {
-            commonWords++;
-            break;
-          }
+      bool foundExactMatch = false;
+      bool foundPartialMatch = false;
+      
+      for (String word2 in words2) {
+        if (word1 == word2) {
+          exactMatches++;
+          foundExactMatch = true;
+          break;
+        } else if (!foundPartialMatch && (word1.contains(word2) || word2.contains(word1))) {
+          partialMatches++;
+          foundPartialMatch = true;
         }
       }
     }
     
-    // 计算相似度分数
-    double wordSimilarity = words1.isNotEmpty && words2.isNotEmpty 
-        ? (commonWords / max(words1.length, words2.length)) * 100 
-        : 0;
+    // 计算匹配率
+    double exactMatchRatio = exactMatches / words1.length;
+    double partialMatchRatio = partialMatches / words1.length;
+    double totalMatchRatio = exactMatchRatio + (partialMatchRatio * 0.7); // 部分匹配权重较低
     
-    // 检查字符串包含关系
-    double containsScore = 0;
-    if (str1.contains(str2) || str2.contains(str1)) {
-      containsScore = 80;
+    // 基础分数
+    double baseScore = totalMatchRatio * 100;
+    
+    // 如果所有查询词都能在目标字符串中找到（不考虑顺序），给予高分
+    bool allWordsFound = words1.every((word1) => 
+        words2.any((word2) => word1 == word2 || word1.contains(word2) || word2.contains(word1)));
+    
+    if (allWordsFound) {
+      baseScore = max(baseScore, 85.0); // 确保所有词匹配时得到高分
     }
     
-    // 检查编辑距离
-    double editDistanceScore = 100 - _calculateEditDistance(str1, str2) * 10;
-    editDistanceScore = max(0, editDistanceScore);
+    // 长度相似性奖励
+    double lengthSimilarity = 1.0 - (normalizedStr1.length - normalizedStr2.length).abs() / max(normalizedStr1.length, normalizedStr2.length);
+    baseScore += lengthSimilarity * 10;
     
-    // 综合分数
-    return max(wordSimilarity, max(containsScore, editDistanceScore));
+    // 检查字符串包含关系
+    if (normalizedStr1.contains(normalizedStr2) || normalizedStr2.contains(normalizedStr1)) {
+      baseScore = max(baseScore, 80.0);
+    }
+    
+    return min(100.0, baseScore);
   }
 
   // 计算编辑距离
@@ -1279,6 +1329,41 @@ Rules:
           ),
         ),
       ],
+    );
+  }
+
+  void _showManualSearchDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text('Manual Food Search'),
+          content: Text(
+            'No food items were detected in the image. You can:\n\n'
+            '• Take a new photo with food items\n'
+            '• Use the manual search feature in the Log Food page\n'
+            '• Navigate back to the main page and use "Add Food" option',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                // Navigate back to previous page
+                Navigator.of(context).pop();
+              },
+              child: Text('Go Back'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                // Take a new photo
+                _pickImage(ImageSource.camera);
+              },
+              child: Text('Take New Photo'),
+            ),
+          ],
+        );
+      },
     );
   }
 }

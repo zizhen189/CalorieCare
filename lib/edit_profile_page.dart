@@ -140,7 +140,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
   double _calculateTargetCalories(double tdee, String goal, double currentWeight, double targetWeight) {
     if (goal == 'maintain') {
       return tdee;
-    } else if (goal == 'loss') {
+    } else if (goal == 'loss' || goal == 'lose') {
       return tdee - 500; // 500 calorie deficit for ~0.5kg/week loss
     } else { // gain
       return tdee + 300; // 300 calorie surplus for ~0.25kg/week gain
@@ -416,9 +416,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
                   
                   // Goal-specific validation
                   if (_selectedGoal == 'loss' && targetWeight >= widget.user.weight) {
-                    return 'Weight loss target must be less than current weight (${widget.user.weight}kg)';
+                    return 'Target must be less than ${widget.user.weight}kg';
                   } else if (_selectedGoal == 'gain' && targetWeight <= widget.user.weight) {
-                    return 'Weight gain target must be greater than current weight (${widget.user.weight}kg)';
+                    return 'Target must be greater than ${widget.user.weight}kg';
                   }
                   
                   return null;

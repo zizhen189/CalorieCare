@@ -772,31 +772,48 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     
     try {
       final adjustmentService = CalorieAdjustmentService();
-      final adjustedTarget = await adjustmentService.getCurrentActiveTargetCalories(currentUser.userID);
       
-      print('=== Loading Adjusted Target ===');
-      print('Original target: $_originalTarget');
-      print('Adjusted target: $adjustedTarget');
-      print('User ID: ${currentUser.userID}');
+      // 检查选择的日期是否是今天
+      final today = DateTime.now();
+      final isToday = selectedDate.year == today.year && 
+                     selectedDate.month == today.month && 
+                     selectedDate.day == today.day;
       
-      // Check if there's an active adjustment
-      final adjustmentHistory = await adjustmentService.getAdjustmentHistory(currentUser.userID, limit: 1);
+      int targetCalories;
+      bool hasActiveAdjustment = false;
+      
+      if (isToday) {
+        // 如果是今天，使用调整后的目标
+        targetCalories = await adjustmentService.getCurrentActiveTargetCalories(currentUser.userID);
+        
+        // 检查是否有活跃的调整
+        final adjustmentHistory = await adjustmentService.getAdjustmentHistory(currentUser.userID, limit: 1);
+        hasActiveAdjustment = adjustmentHistory.isNotEmpty && targetCalories != _originalTarget;
+        
+        print('=== Loading Target for TODAY ===');
+        print('Original target: $_originalTarget');
+        print('Adjusted target: $targetCalories');
+        print('Has active adjustment: $hasActiveAdjustment');
+      } else {
+        // 如果是历史日期，总是使用原始目标
+        targetCalories = _originalTarget;
+        hasActiveAdjustment = false;
+        
+        print('=== Loading Target for HISTORICAL DATE ===');
+        print('Selected date: $selectedDate');
+        print('Using original target: $targetCalories');
+      }
       
       setState(() {
-        if (adjustmentHistory.isNotEmpty && adjustedTarget != _originalTarget) {
-          print('✅ Using adjusted target: $adjustedTarget');
-          kcalGoal = adjustedTarget;
-          _hasActiveAdjustment = true;
-        } else {
-          print('❌ Using original target: $_originalTarget');
-          _hasActiveAdjustment = false;
-        }
+        kcalGoal = targetCalories;
+        _hasActiveAdjustment = hasActiveAdjustment;
         kcalAvailable = kcalGoal - totalCaloriesConsumed;
       });
+      
       print('Final kcalGoal: $kcalGoal');
-      print('=== End Loading Adjusted Target ===');
+      print('=== End Loading Target ===');
     } catch (e) {
-      print('Error loading adjusted target: $e');
+      print('Error loading target: $e');
     }
   }
 
@@ -823,8 +840,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       setState(() {
         selectedDate = date;
       });
-      // 重新加载选中日期的卡路里数据
+      // 重新加载选中日期的卡路里数据和目标
       _loadTodayCalories();
+      _loadAdjustedTarget(); // 重新加载目标，因为历史日期应该显示原始目标
     }
   }
 
@@ -892,6 +910,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             pinned: true,
             backgroundColor: const Color(0xFF5AA162),
             elevation: 0,
+            automaticallyImplyLeading: false, // 禁用返回按钮
             flexibleSpace: FlexibleSpaceBar(
               background: Container(
                 decoration: const BoxDecoration(
