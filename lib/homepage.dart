@@ -116,7 +116,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _loadTodayCalories(),
       _loadStreakData(),
       _loadAdjustedTarget(),
-      _checkWeightRecord(),
+      _updateWeightRecordStatus(), // 只更新状态，不显示弹窗
     ]);
     print('✅ HomePage: All data refreshed');
   }
@@ -249,6 +249,21 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       }
     } catch (e) {
       print('Error checking weight record: $e');
+    }
+  }
+
+  // 只更新体重记录状态，不显示弹窗（用于刷新时）
+  Future<void> _updateWeightRecordStatus() async {
+    UserModel? currentUser = widget.user ?? await SessionService.getUserSession();
+    if (currentUser == null || currentUser.userID.isEmpty) return;
+    
+    try {
+      final hasRecorded = await _weightService.hasRecordedWeightToday(currentUser.userID);
+      setState(() {
+        _hasRecordedWeightToday = hasRecorded;
+      });
+    } catch (e) {
+      print('Error updating weight record status: $e');
     }
   }
 
@@ -971,16 +986,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                               children: [
                                 // Debug button for auto adjustment
                                 GestureDetector(
-                                  onTap: _testAutoAdjustment,
+                                  onTap: () {
+                                    Navigator.pushNamed(context, '/auto_adjustment_debug');
+                                  },
                                   child: Container(
                                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                     decoration: BoxDecoration(
-                                      color: Colors.red.withOpacity(0.2),
+                                      color: Colors.orange.withOpacity(0.2),
                                       borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(color: Colors.red.withOpacity(0.5)),
+                                      border: Border.all(color: Colors.orange.withOpacity(0.5)),
                                     ),
                                     child: const Text(
-                                      'TEST',
+                                      'DEBUG',
                                       style: TextStyle(
                                         color: Colors.white,
                                         fontSize: 10,

@@ -34,6 +34,9 @@ class AutoAdjustmentService {
     // 初始化通知服务
     await _notificationService.initialize();
     
+    // 初始化本地通知插件（用于备用通知）
+    await _initializeLocalNotifications();
+    
     // 检查是否启用自动调整
     final isEnabled = await _adjustmentService.isAutoAdjustmentEnabled(userId);
     if (!isEnabled) {
@@ -285,6 +288,63 @@ class AutoAdjustmentService {
       }
     } catch (e) {
       print('Error handling notification tap: $e');
+    }
+  }
+
+  /// 初始化本地通知插件
+  Future<void> _initializeLocalNotifications() async {
+    try {
+      const AndroidInitializationSettings initializationSettingsAndroid =
+          AndroidInitializationSettings('@mipmap/ic_launcher');
+      
+      const DarwinInitializationSettings initializationSettingsIOS =
+          DarwinInitializationSettings(
+        requestAlertPermission: true,
+        requestBadgePermission: true,
+        requestSoundPermission: true,
+      );
+      
+      const InitializationSettings initializationSettings =
+          InitializationSettings(
+        android: initializationSettingsAndroid,
+        iOS: initializationSettingsIOS,
+      );
+      
+      await _localNotifications.initialize(
+        initializationSettings,
+        onDidReceiveNotificationResponse: _onAutoAdjustmentNotificationTapped,
+      );
+      
+      // 创建通知渠道
+      await _createAutoAdjustmentNotificationChannel();
+      
+      print('Auto adjustment local notifications initialized successfully');
+    } catch (e) {
+      print('Error initializing auto adjustment local notifications: $e');
+    }
+  }
+
+  /// 创建自动调整通知渠道
+  Future<void> _createAutoAdjustmentNotificationChannel() async {
+    final androidPlugin = _localNotifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    if (androidPlugin == null) return;
+
+    const AndroidNotificationChannel channel = AndroidNotificationChannel(
+      'auto_adjustment_channel',
+      'Auto Adjustment Reminders',
+      description: 'Notifications to remind about calorie adjustments',
+      importance: Importance.high,
+    );
+
+    await androidPlugin.createNotificationChannel(channel);
+    print('Auto adjustment notification channel created');
+  }
+
+  /// 处理自动调整通知点击
+  void _onAutoAdjustmentNotificationTapped(NotificationResponse response) {
+    print('Auto adjustment notification tapped: ${response.payload}');
+    if (_currentUserId != null) {
+      handleNotificationTap(_currentUserId!);
     }
   }
 } 

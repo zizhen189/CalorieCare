@@ -12,6 +12,7 @@ import 'package:caloriecare/notification_service.dart';
 import 'package:caloriecare/fcm_service.dart';
 import 'package:caloriecare/global_notification_manager.dart';
 import 'package:caloriecare/session_service.dart';
+import 'package:caloriecare/auto_adjustment_debug_page.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -72,6 +73,7 @@ class MyApp extends StatelessWidget {
         '/forget_password': (context) => const ForgetPasswordPage(),
         '/home': (context) => const HomePage(),
         '/enhanced_home': (context) => const EnhancedHomePage(),
+        '/auto_adjustment_debug': (context) => const AutoAdjustmentDebugPage(),
       },
       onGenerateRoute: (settings) {
         if (settings.name == '/home') {
