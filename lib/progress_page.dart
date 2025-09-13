@@ -807,7 +807,6 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
 
         final goal = snapshot.data!;
         final totalCalories = _calorieData.fold<int>(0, (total, item) => total + (item['calories'] as int));
-        final netCalories = totalCalories;
 
         return SingleChildScrollView(
           controller: _scrollController,
@@ -997,9 +996,9 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Daily Summary',
-                      style: TextStyle(
+                    Text(
+                      _selectedView == 'Daily view' ? 'Daily Summary' : 'Monthly Summary',
+                      style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.w700,
                         color: Colors.black87,
@@ -1007,7 +1006,6 @@ class _ProgressPageState extends State<ProgressPage> with TickerProviderStateMix
                     ),
                     const SizedBox(height: 20),
                     _buildEnhancedSummaryRow('Total Calories', totalCalories.toString(), Icons.local_fire_department),
-                    _buildEnhancedSummaryRow('Net Calories', netCalories.toString(), Icons.trending_up),
                     _buildEnhancedSummaryRow('Goal', goal.toString(), Icons.flag, isGoal: true),
                   ],
                 ),
