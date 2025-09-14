@@ -178,8 +178,8 @@ class CalorieAdjustmentService {
     return 2000.0; // 默认值
   }
 
-  /// 获取用户当前生效的目标卡路里（显示用）
-  Future<double> _getCurrentTargetCalories(String userId) async {
+  /// 获取用户当前生效的目标卡路里（用于自动调整计算，继承昨天的调整）
+  Future<double> _getCurrentTargetCaloriesForCalculation(String userId) async {
     // 首先检查自动调整是否启用
     final autoAdjustmentEnabled = await this.isAutoAdjustmentEnabled(userId);
     if (!autoAdjustmentEnabled) {
@@ -233,15 +233,66 @@ class CalorieAdjustmentService {
         .get();
     
     if (yesterdayAdjustmentQuery.docs.isNotEmpty) {
-      // 使用昨天的调整目标
+      // 使用昨天的调整目标（用于自动调整计算）
       final data = yesterdayAdjustmentQuery.docs.first.data();
-      print('Using yesterday\'s adjustment: ${data['AdjustTargetCalories']}');
+      print('Using yesterday\'s adjustment for calculation: ${data['AdjustTargetCalories']}');
       return (data['AdjustTargetCalories']).toDouble();
     }
     
     // 如果都没有调整，使用原始目标
     final baseTarget = await _getBaseTargetCalories(userId);
-    print('Using base target: $baseTarget');
+    print('No adjustment for calculation, using base target: $baseTarget');
+    return baseTarget;
+  }
+
+  /// 获取用户当前生效的目标卡路里（用于显示，今天没有调整时显示原始目标）
+  Future<double> _getCurrentTargetCaloriesForDisplay(String userId) async {
+    // 首先检查自动调整是否启用
+    final autoAdjustmentEnabled = await this.isAutoAdjustmentEnabled(userId);
+    if (!autoAdjustmentEnabled) {
+      // 如果自动调整已禁用，直接返回原始目标
+      final baseTarget = await _getBaseTargetCalories(userId);
+      print('Auto adjustment disabled, using base target: $baseTarget');
+      return baseTarget;
+    }
+    
+    // 首先检查用户当前的目标类型
+    final targetQuery = await _firestore
+        .collection('Target')
+        .where('UserID', isEqualTo: userId)
+        .get();
+    
+    if (targetQuery.docs.isNotEmpty) {
+      final targetData = targetQuery.docs.first.data();
+      final targetType = targetData['TargetType'] ?? 'maintain';
+      
+      // 如果用户已经切换到 maintain 模式，直接使用 Target 表中的卡路里目标
+      if (targetType == 'maintain') {
+        final maintainTarget = (targetData['TargetCalories'] ?? 2000.0).toDouble();
+        print('User in maintain mode, using maintain target: $maintainTarget');
+        return maintainTarget;
+      }
+    }
+    
+    // 如果用户还在 gain/loss 模式且自动调整启用，检查调整记录
+    final todayStr = _getTodayDate();
+    
+    final todayAdjustmentQuery = await _firestore
+        .collection('CalorieAdjustment')
+        .where('UserID', isEqualTo: userId)
+        .where('AdjustDate', isEqualTo: todayStr)
+        .get();
+    
+    if (todayAdjustmentQuery.docs.isNotEmpty) {
+      // 使用今天的调整目标
+      final data = todayAdjustmentQuery.docs.first.data();
+      print('Using today\'s adjustment for display: ${data['AdjustTargetCalories']}');
+      return (data['AdjustTargetCalories']).toDouble();
+    }
+    
+    // 如果今天没有调整，直接使用原始目标（用于显示）
+    final baseTarget = await _getBaseTargetCalories(userId);
+    print('No adjustment for today, using base target for display: $baseTarget');
     return baseTarget;
   }
 
@@ -291,7 +342,7 @@ class CalorieAdjustmentService {
       
       final yesterdayIntake = intakeHistory.first['totalCalories'] as int;
       final baseTarget = await _getBaseTargetCalories(userId); // 原始基准目标（用于记录）
-      final currentDisplayTarget = await _getCurrentTargetCalories(userId); // 当前生效的目标（用于计算）
+      final currentDisplayTarget = await _getCurrentTargetCaloriesForCalculation(userId); // 当前生效的目标（用于计算）
       final bmr = _calculateBMR(userData);
       final tdee = _calculateTDEE(userData);
       
@@ -487,9 +538,9 @@ class CalorieAdjustmentService {
     };
   }
 
-  /// 获取当前有效的目标卡路里（供其他服务使用）
+  /// 获取当前有效的目标卡路里（供其他服务使用，用于显示）
   Future<int> getCurrentActiveTargetCalories(String userId) async {
-    final target = await _getCurrentTargetCalories(userId);
+    final target = await _getCurrentTargetCaloriesForDisplay(userId);
     return target.round();
   }
 

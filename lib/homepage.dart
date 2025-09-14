@@ -1018,15 +1018,32 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                               crossAxisAlignment: CrossAxisAlignment.start,
                                               mainAxisSize: MainAxisSize.min,
                                               children: [
-                                                Text('Current Time: ${debugInfo['currentTime']}'),
+                                                Text('Current Time: ${debugInfo['currentTime']}', style: TextStyle(fontWeight: FontWeight.bold)),
+                                                SizedBox(height: 8),
                                                 Text('Today: ${debugInfo['today']}'),
                                                 Text('Yesterday: ${debugInfo['yesterday']}'),
-                                                Text('Today Adjustments: ${debugInfo['todayAdjustments']}'),
-                                                Text('Yesterday Adjustments: ${debugInfo['yesterdayAdjustments']}'),
+                                                SizedBox(height: 8),
+                                                Text('Today Adjustment: ${debugInfo['todayAdjustments'] > 0 ? 'YES' : 'NO'}', 
+                                                     style: TextStyle(
+                                                       color: debugInfo['todayAdjustments'] > 0 ? Colors.green : Colors.red,
+                                                       fontWeight: FontWeight.bold
+                                                     )),
+                                                Text('Yesterday Adjustment: ${debugInfo['yesterdayAdjustments'] > 0 ? 'YES' : 'NO'}', 
+                                                     style: TextStyle(
+                                                       color: debugInfo['yesterdayAdjustments'] > 0 ? Colors.green : Colors.red,
+                                                       fontWeight: FontWeight.bold
+                                                     )),
+                                                SizedBox(height: 8),
                                                 Text('Today Intake: ${debugInfo['todayIntake']} calories'),
                                                 Text('Yesterday Intake: ${debugInfo['yesterdayIntake']} calories'),
-                                                Text('Has Adjusted Today: ${debugInfo['hasAdjustedToday']}'),
-                                                Text('Current Target: ${debugInfo['currentTarget']}'),
+                                                SizedBox(height: 8),
+                                                Text('Has Adjusted Today: ${debugInfo['hasAdjustedToday'] ? 'YES' : 'NO'}', 
+                                                     style: TextStyle(
+                                                       color: debugInfo['hasAdjustedToday'] ? Colors.green : Colors.red,
+                                                       fontWeight: FontWeight.bold
+                                                     )),
+                                                Text('Current Target: ${debugInfo['currentTarget']} calories', 
+                                                     style: TextStyle(fontWeight: FontWeight.bold)),
                                               ],
                                             ),
                                           ),
@@ -1034,6 +1051,42 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                             TextButton(
                                               onPressed: () => Navigator.pop(context),
                                               child: Text('Close'),
+                                            ),
+                                            TextButton(
+                                              onPressed: () async {
+                                                Navigator.pop(context);
+                                                // 手动触发自动调整
+                                                UserModel? currentUser = widget.user ?? await SessionService.getUserSession();
+                                                if (currentUser != null) {
+                                                  final autoService = AutoAdjustmentService();
+                                                  print('=== Manual Auto Adjustment Trigger ===');
+                                                  final result = await autoService.executeNow(currentUser.userID);
+                                                  print('Manual adjustment result: $result');
+                                                  
+                                                  // 刷新数据
+                                                  await _refreshAllData();
+                                                  
+                                                  // 显示结果
+                                                  if (mounted) {
+                                                    showDialog(
+                                                      context: context,
+                                                      builder: (context) => AlertDialog(
+                                                        title: Text('Auto Adjustment Result'),
+                                                        content: Text(result['success'] ? 
+                                                          'Adjustment completed successfully!\nNew target: ${result['newTarget']} calories' :
+                                                          'No adjustment needed: ${result['reason']}'),
+                                                        actions: [
+                                                          TextButton(
+                                                            onPressed: () => Navigator.pop(context),
+                                                            child: Text('OK'),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    );
+                                                  }
+                                                }
+                                              },
+                                              child: Text('Trigger Auto Adjustment'),
                                             ),
                                           ],
                                         ),
