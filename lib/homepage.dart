@@ -21,6 +21,7 @@ import 'package:caloriecare/profile_page.dart'; // Added import for ProfilePage
 import 'package:shared_preferences/shared_preferences.dart'; // Added import for SharedPreferences
 import 'package:caloriecare/session_service.dart'; // Added import for SessionService
 import 'package:caloriecare/refresh_manager.dart'; // Added import for RefreshManager
+import 'package:caloriecare/adjustment_debug_helper.dart';
 
 
 void main() {
@@ -810,13 +811,29 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         print('Adjusted target: $targetCalories');
         print('Has active adjustment: $hasActiveAdjustment');
       } else {
-        // 如果是历史日期，总是使用原始目标
-        targetCalories = _originalTarget;
-        hasActiveAdjustment = false;
+        // 如果是历史日期，检查是否有调整记录
+        final selectedDateStr = '${selectedDate.year}-${selectedDate.month.toString().padLeft(2, '0')}-${selectedDate.day.toString().padLeft(2, '0')}';
         
-        print('=== Loading Target for HISTORICAL DATE ===');
-        print('Selected date: $selectedDate');
-        print('Using original target: $targetCalories');
+        // 检查选择日期是否有调整记录
+        final adjustmentHistory = await adjustmentService.getAdjustmentHistory(currentUser.userID, limit: 10);
+        final selectedDateAdjustment = adjustmentHistory.where((adj) => adj['AdjustDate'] == selectedDateStr).toList();
+        
+        if (selectedDateAdjustment.isNotEmpty) {
+          // 使用调整后的目标
+          targetCalories = (selectedDateAdjustment.first['AdjustTargetCalories'] ?? _originalTarget).toInt();
+          hasActiveAdjustment = true;
+          print('=== Loading Target for HISTORICAL DATE WITH ADJUSTMENT ===');
+          print('Selected date: $selectedDate');
+          print('Found adjustment: ${selectedDateAdjustment.first}');
+          print('Using adjusted target: $targetCalories');
+        } else {
+          // 使用原始目标
+          targetCalories = _originalTarget;
+          hasActiveAdjustment = false;
+          print('=== Loading Target for HISTORICAL DATE ===');
+          print('Selected date: $selectedDate');
+          print('No adjustment found, using original target: $targetCalories');
+        }
       }
       
       setState(() {
@@ -986,8 +1003,42 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                               children: [
                                 // Debug button for auto adjustment
                                 GestureDetector(
-                                  onTap: () {
-                                    Navigator.pushNamed(context, '/auto_adjustment_debug');
+                                  onTap: () async {
+                                    UserModel? currentUser = widget.user ?? await SessionService.getUserSession();
+                                    if (currentUser != null) {
+                                      final debugHelper = AdjustmentDebugHelper();
+                                      final debugInfo = await debugHelper.debugCurrentAdjustmentState(currentUser.userID);
+                                      
+                                      showDialog(
+                                        context: context,
+                                        builder: (context) => AlertDialog(
+                                          title: Text('Adjustment Debug Info'),
+                                          content: SingleChildScrollView(
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Text('Current Time: ${debugInfo['currentTime']}'),
+                                                Text('Today: ${debugInfo['today']}'),
+                                                Text('Yesterday: ${debugInfo['yesterday']}'),
+                                                Text('Today Adjustments: ${debugInfo['todayAdjustments']}'),
+                                                Text('Yesterday Adjustments: ${debugInfo['yesterdayAdjustments']}'),
+                                                Text('Today Intake: ${debugInfo['todayIntake']} calories'),
+                                                Text('Yesterday Intake: ${debugInfo['yesterdayIntake']} calories'),
+                                                Text('Has Adjusted Today: ${debugInfo['hasAdjustedToday']}'),
+                                                Text('Current Target: ${debugInfo['currentTarget']}'),
+                                              ],
+                                            ),
+                                          ),
+                                          actions: [
+                                            TextButton(
+                                              onPressed: () => Navigator.pop(context),
+                                              child: Text('Close'),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    }
                                   },
                                   child: Container(
                                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),

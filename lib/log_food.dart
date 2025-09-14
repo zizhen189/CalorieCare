@@ -9,6 +9,7 @@ import 'streak_page.dart';
 import 'loading_utils.dart';
 import 'refresh_manager.dart';
 import 'dart:convert';
+import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
@@ -83,7 +84,6 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
   }
 
   void _fetchInitialFoods() async {
-    setState(() => _isLoading = true);
     try {
       QuerySnapshot snapshot = await FirebaseFirestore.instance
           .collection('Food')
@@ -91,7 +91,9 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
           .get();
       setState(() {
         _foods = snapshot.docs;
+        _allSearchResults = [];
         _isLoading = false;
+        _showAiButton = false;
       });
     } catch (e) {
       setState(() => _isLoading = false);
@@ -99,39 +101,68 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
     }
   }
 
+  // 防抖动计时器
+  Timer? _debounceTimer;
+  
   void _onSearchChanged() async {
-    String query = _searchController.text.trim();
+    // 取消之前的计时器
+    if (_debounceTimer?.isActive ?? false) {
+      _debounceTimer!.cancel();
+    }
+    
+    // 获取当前查询并移除光标符号
+    String query = _searchController.text.trim().replaceAll('|', '');
+    
+    // 如果查询为空，立即清空结果并获取初始食物
     if (query.isEmpty) {
-      _fetchInitialFoods();
       setState(() {
+        _isLoading = true;
         _showAiButton = false;
         _lastSearchQuery = '';
         _allSearchResults = [];
         _currentDisplayCount = 10;
       });
+      _fetchInitialFoods();
       return;
     }
     
+    // 显示加载状态，但保留当前结果
     setState(() => _isLoading = true);
     
-    try {
-      List<DocumentSnapshot> results = await _performEfficientSearch(query, limit: 100);
-      
-      setState(() {
-        _allSearchResults = results;
-        _currentDisplayCount = 10;
-        _foods = results.take(_currentDisplayCount).toList();
-        _isLoading = false;
-        _showAiButton = results.isEmpty && query.isNotEmpty;
-        _lastSearchQuery = query;
-      });
-    } catch (e) {
-      setState(() => _isLoading = false);
-      _showErrorSnackBar('Search failed');
-    }
+    // 设置防抖动计时器，延迟300毫秒执行搜索
+    _debounceTimer = Timer(const Duration(milliseconds: 300), () async {
+      try {
+        // 再次检查查询是否已更改
+        if (query != _searchController.text.trim()) return;
+        
+        List<DocumentSnapshot> results = await _performEfficientSearch(query, limit: 100);
+        
+        // 再次检查查询是否已更改
+        if (query != _searchController.text.trim()) return;
+        
+        setState(() {
+          _allSearchResults = results;
+          _currentDisplayCount = 10;
+          _foods = results.take(_currentDisplayCount).toList();
+          _isLoading = false;
+          _showAiButton = results.isEmpty && query.isNotEmpty;
+          _lastSearchQuery = query;
+        });
+      } catch (e) {
+        if (query == _searchController.text.trim()) {
+          setState(() => _isLoading = false);
+          _showErrorSnackBar('Search failed');
+        }
+      }
+    });
   }
 
   Future<List<DocumentSnapshot>> _performEfficientSearch(String query, {int limit = 100}) async {
+    // 确保查询不为空
+    if (query.trim().isEmpty) {
+      return [];
+    }
+    
     final String lowerQuery = query.toLowerCase().trim();
     final String upperQuery = query.toUpperCase();
     final String capitalizedQuery = query.substring(0, 1).toUpperCase() + 
@@ -150,15 +181,42 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
       uniqueResults[doc.id] = doc;
     }
     
+    // 添加单词边界匹配查询
+    // 例如，搜索"apple"时，应该优先匹配"Apple"而不是"Pineapple"
+    final List<String> queryWords = query.toLowerCase().split(' ').where((w) => w.isNotEmpty).toList();
+    if (queryWords.length == 1) {
+      try {
+        final wordBoundaryQuery = await FirebaseFirestore.instance
+            .collection('Food')
+            .where('SearchKeywords', arrayContains: queryWords[0])
+            .limit(30)
+            .get();
+            
+        for (var doc in wordBoundaryQuery.docs) {
+          String foodName = (doc['FoodName'] ?? '').toString().toLowerCase();
+          List<String> foodNameWords = foodName.split(' ');
+          // 检查是否有完全匹配的单词
+          if (foodNameWords.contains(queryWords[0])) {
+            uniqueResults[doc.id] = doc;
+          }
+        }
+      } catch (e) {
+        print('SearchKeywords field not found, skipping array-contains search');
+      }
+    }
+    
     // Multiple case variations matching
     final searchVariations = [query, lowerQuery, upperQuery, capitalizedQuery];
     
     for (String searchTerm in searchVariations) {
+      // 确保搜索词不为空
+      if (searchTerm.trim().isEmpty) continue;
+      
       final startsWithQuery = await FirebaseFirestore.instance
           .collection('Food')
           .where('FoodName', isGreaterThanOrEqualTo: searchTerm)
           .where('FoodName', isLessThanOrEqualTo: '$searchTerm\uf8ff')
-          .limit(30)
+          .limit(50) // 增加限制以获取更多潜在匹配项
           .get();
       
       for (var doc in startsWithQuery.docs) {
@@ -210,20 +268,38 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
     }
     
     final sortedResults = uniqueResults.values.toList();
-    sortedResults.sort((a, b) {
-      String nameA = (a['FoodName'] ?? '').toString().toLowerCase();
-      String nameB = (b['FoodName'] ?? '').toString().toLowerCase();
-      
-      // Calculate match score
-      double scoreA = _calculateMatchScore(nameA, lowerQuery);
-      double scoreB = _calculateMatchScore(nameB, lowerQuery);
-      
-      if (scoreA != scoreB) {
-        return scoreB.compareTo(scoreA); // 降序排列，分数高的在前
-      }
-      
-      return nameA.compareTo(nameB);
-    });
+    
+    // 确保查询不为空
+    if (lowerQuery.isNotEmpty) {
+      sortedResults.sort((a, b) {
+        String nameA = (a['FoodName'] ?? '').toString().toLowerCase();
+        String nameB = (b['FoodName'] ?? '').toString().toLowerCase();
+        
+        // 计算匹配分数
+        double scoreA = _calculateMatchScore(nameA, lowerQuery);
+        double scoreB = _calculateMatchScore(nameB, lowerQuery);
+        
+        // 首先按匹配分数排序
+        if ((scoreA - scoreB).abs() > 0.1) { // 使用阈值避免浮点数比较问题
+          return scoreB.compareTo(scoreA); // 降序排列，分数高的在前
+        }
+        
+        // 如果分数相近，优先显示名称较短的食物
+        if (nameA.length != nameB.length) {
+          return nameA.length - nameB.length;
+        }
+        
+        // 最后按字母顺序排序
+        return nameA.compareTo(nameB);
+      });
+    } else {
+      // 如果查询为空，按字母顺序排序
+      sortedResults.sort((a, b) {
+        String nameA = (a['FoodName'] ?? '').toString().toLowerCase();
+        String nameB = (b['FoodName'] ?? '').toString().toLowerCase();
+        return nameA.compareTo(nameB);
+      });
+    }
     
     return sortedResults.take(limit).toList();
   }
@@ -237,26 +313,78 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
     // Get more data for local filtering
     final allFoodsQuery = await FirebaseFirestore.instance
         .collection('Food')
-        .limit(200)
+        .limit(300) // 增加限制以获取更多潜在匹配项
         .get();
     
+    // 1. 首先尝试精确匹配所有词（顺序无关）
     for (var doc in allFoodsQuery.docs) {
       String foodName = (doc['FoodName'] ?? '').toString().toLowerCase();
-      
-      // Remove punctuation and normalize the food name for better matching
       String normalizedFoodName = foodName.replaceAll(RegExp(r'[,\-_\.]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
       
-      // Check if contains all keywords (order independent)
+      // 检查是否包含所有关键词（顺序无关）
       bool containsAllWords = words.every((word) => normalizedFoodName.contains(word));
       
       if (containsAllWords) {
         uniqueResults[doc.id] = doc;
       }
     }
+    
+    // 2. 如果没有找到足够的结果，尝试部分匹配（匹配第一个词和其他词的部分）
+    if (uniqueResults.length < 5 && words.length > 1) {
+      String firstWord = words[0];
+      
+      for (var doc in allFoodsQuery.docs) {
+        // 如果已经添加过这个文档，跳过
+        if (uniqueResults.containsKey(doc.id)) continue;
+        
+        String foodName = (doc['FoodName'] ?? '').toString().toLowerCase();
+        String normalizedFoodName = foodName.replaceAll(RegExp(r'[,\-_\.]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+        
+        // 首先检查第一个词是否匹配
+        if (normalizedFoodName.contains(firstWord)) {
+          // 计算其他词的匹配程度
+          int matchCount = 0;
+          for (int i = 1; i < words.length; i++) {
+            if (normalizedFoodName.contains(words[i])) {
+              matchCount++;
+            }
+          }
+          
+          // 如果至少匹配了一部分其他词，或者第一个词是完全匹配的
+          if (matchCount > 0 || normalizedFoodName.split(' ').contains(firstWord)) {
+            uniqueResults[doc.id] = doc;
+          }
+        }
+      }
+    }
+    
+    // 3. 如果仍然没有足够的结果，尝试更宽松的匹配（任何词的匹配）
+    if (uniqueResults.length < 3 && words.length > 1) {
+      for (var doc in allFoodsQuery.docs) {
+        // 如果已经添加过这个文档，跳过
+        if (uniqueResults.containsKey(doc.id)) continue;
+        
+        String foodName = (doc['FoodName'] ?? '').toString().toLowerCase();
+        String normalizedFoodName = foodName.replaceAll(RegExp(r'[,\-_\.]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+        
+        // 检查是否至少包含一个关键词
+        bool containsAnyWord = words.any((word) => normalizedFoodName.contains(word));
+        
+        if (containsAnyWord) {
+          uniqueResults[doc.id] = doc;
+          
+          // 如果已经找到足够的结果，退出循环
+          if (uniqueResults.length >= 10) break;
+        }
+      }
+    }
   }
   
   // Smart matching judgment
   bool _isMatchingFoodName(String foodName, String query) {
+    // 移除查询中可能存在的光标符号
+    query = query.replaceAll('|', '');
+    
     final queryWords = query.split(' ').where((w) => w.isNotEmpty).toList();
     
     // Normalize food name by removing punctuation
@@ -264,24 +392,65 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
     
     // Single word matching
     if (queryWords.length == 1) {
-      return normalizedFoodName.contains(query);
+      // 检查是否有完全匹配的单词
+      List<String> foodNameWords = normalizedFoodName.split(' ');
+      for (String word in foodNameWords) {
+        if (word.toLowerCase() == query.toLowerCase()) {
+          return true;
+        }
+      }
+      // 如果没有完全匹配的单词，则检查部分匹配
+      return normalizedFoodName.contains(query.toLowerCase());
     }
     
-    // Multi-word matching - must contain all keywords (order independent)
-    return queryWords.every((word) => normalizedFoodName.contains(word.toLowerCase()));
+    // 多词匹配策略改进
+    // 1. 首先尝试完全匹配所有词（顺序无关）
+    bool allWordsMatch = queryWords.every((word) => normalizedFoodName.contains(word.toLowerCase()));
+    if (allWordsMatch) return true;
+    
+    // 2. 如果不是所有词都匹配，检查第一个词是否匹配，以及其他词的部分匹配
+    if (normalizedFoodName.contains(queryWords[0].toLowerCase())) {
+      // 计算其他词的匹配数量
+      int matchCount = 0;
+      for (int i = 1; i < queryWords.length; i++) {
+        if (normalizedFoodName.contains(queryWords[i].toLowerCase())) {
+          matchCount++;
+        }
+      }
+      
+      // 如果第一个词完全匹配（作为单独的词），或者至少有一个其他词匹配
+      List<String> foodNameWords = normalizedFoodName.split(' ');
+      if (foodNameWords.contains(queryWords[0].toLowerCase()) || matchCount > 0) {
+        return true;
+      }
+    }
+    
+    return false;
   }
   
   // 计算匹配分数
   double _calculateMatchScore(String foodName, String query) {
     double score = 0.0;
     
+    // 移除查询中可能存在的光标符号（|）
+    query = query.replaceAll('|', '');
+    
     // Normalize food name and query by removing punctuation
     String normalizedFoodName = foodName.replaceAll(RegExp(r'[,\-_\.]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
     String normalizedQuery = query.replaceAll(RegExp(r'[,\-_\.]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
     
+    // 将食物名称和查询拆分为单词
+    List<String> foodNameWords = normalizedFoodName.split(' ');
+    final queryWords = normalizedQuery.split(' ').where((w) => w.isNotEmpty).toList();
+    
     // Exact match gets highest score
     if (normalizedFoodName == normalizedQuery) {
       return 100.0;
+    }
+    
+    // 完全匹配单个单词（如"apple"完全匹配"Apple"）
+    if (foodNameWords.length == 1 && foodNameWords[0].toLowerCase() == normalizedQuery) {
+      return 95.0;
     }
     
     // Starts with match gets high score
@@ -289,32 +458,81 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
       score += 80.0;
     }
     
+    // 单词边界匹配（如"apple"匹配"Apple"但不匹配"Pineapple"）
+    for (String word in foodNameWords) {
+      if (word.toLowerCase() == normalizedQuery) {
+        score += 75.0;
+        break;
+      }
+    }
+    
     // Contains match
     if (normalizedFoodName.contains(normalizedQuery)) {
       score += 60.0;
     }
     
-    final queryWords = normalizedQuery.split(' ').where((w) => w.isNotEmpty).toList();
+    // 多词搜索评分改进
     if (queryWords.length > 1) {
-      // Multi-word search scoring
       int matchedWords = 0;
       int totalWords = queryWords.length;
+      int exactWordMatches = 0; // 完全匹配的单词数量
       
-      for (String word in queryWords) {
-        if (normalizedFoodName.contains(word)) {
+      // 首先检查第一个词的匹配情况
+      String firstWord = queryWords[0];
+      bool firstWordExactMatch = foodNameWords.contains(firstWord);
+      bool firstWordContained = normalizedFoodName.contains(firstWord);
+      
+      if (firstWordExactMatch) {
+        matchedWords++;
+        exactWordMatches++;
+        score += 40.0; // 第一个词完全匹配给予更高分数
+      } else if (firstWordContained) {
+        matchedWords++;
+        score += 25.0; // 第一个词部分匹配
+      }
+      
+      // 检查其他词的匹配情况
+      for (int i = 1; i < queryWords.length; i++) {
+        String word = queryWords[i];
+        bool wordExactMatch = foodNameWords.contains(word);
+        bool wordContained = normalizedFoodName.contains(word);
+        
+        if (wordExactMatch) {
           matchedWords++;
-          // Extra points if word is at the beginning
-          if (normalizedFoodName.startsWith(word)) {
-            score += 20.0;
-          } else {
-            score += 10.0;
-          }
+          exactWordMatches++;
+          score += 20.0; // 其他词完全匹配
+        } else if (wordContained) {
+          matchedWords++;
+          score += 10.0; // 其他词部分匹配
         }
       }
       
-      // Extra bonus for matching all words
+      // 额外奖励
+      // 所有词都匹配
       if (matchedWords == totalWords) {
         score += 30.0;
+        
+        // 所有词都完全匹配（作为单独的词）
+        if (exactWordMatches == totalWords) {
+          score += 20.0;
+        }
+        
+        // 词序匹配奖励（检查是否按顺序出现）
+        bool inOrder = true;
+        int lastIndex = -1;
+        
+        for (String word in queryWords) {
+          int currentIndex = normalizedFoodName.indexOf(word);
+          if (currentIndex <= lastIndex) {
+            inOrder = false;
+            break;
+          }
+          lastIndex = currentIndex;
+        }
+        
+        if (inOrder) {
+          score += 15.0;
+        }
       }
       
       // Match ratio score
@@ -329,15 +547,38 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
   }
 
   List<String> _generateSearchKeywords(String query) {
+    // 移除查询中可能存在的光标符号
+    query = query.replaceAll('|', '');
+    
     final keywords = <String>[];
     final words = query.toLowerCase().split(' ').where((w) => w.isNotEmpty).toList();
     
+    // 添加所有单词作为关键词
     keywords.addAll(words);
     
+    // 添加单词前缀作为关键词
     for (String word in words) {
       if (word.length > 2) {
         for (int i = 2; i <= word.length; i++) {
           keywords.add(word.substring(0, i));
+        }
+      }
+    }
+    
+    // 添加多词组合作为关键词
+    if (words.length > 1) {
+      // 添加完整查询作为关键词
+      keywords.add(query.toLowerCase());
+      
+      // 添加相邻词组合
+      for (int i = 0; i < words.length - 1; i++) {
+        keywords.add('${words[i]} ${words[i + 1]}');
+      }
+      
+      // 添加第一个词与其他词的组合
+      if (words.length > 2) {
+        for (int i = 1; i < words.length; i++) {
+          keywords.add('${words[0]} ${words[i]}');
         }
       }
     }
@@ -476,6 +717,13 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
                   icon: Icon(Icons.clear_rounded, color: textSecondary),
                   onPressed: () {
                     _searchController.clear();
+                    setState(() {
+                      _isLoading = true;
+                      _showAiButton = false;
+                      _lastSearchQuery = '';
+                      _allSearchResults = [];
+                      _currentDisplayCount = 10;
+                    });
                     _fetchInitialFoods();
                   },
                 )

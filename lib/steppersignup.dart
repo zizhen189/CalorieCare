@@ -76,7 +76,7 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF5AA162),
-      resizeToAvoidBottomInset: false, // 防止键盘推动界面
+      resizeToAvoidBottomInset: true, // 允许键盘推动界面
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,

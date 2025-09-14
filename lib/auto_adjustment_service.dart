@@ -186,17 +186,30 @@ class AutoAdjustmentService {
       print('=== Checking for missed adjustments on startup ===');
       
       final now = DateTime.now();
-      final today = now.toIso8601String().split('T')[0];
+      // 使用本地时间而不是UTC时间
+      final today = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
       
-      // 如果当前时间已经超过今天的12点，且今天还没有调整过，说明错过了
-      if (now.hour >= 0) { // 00:00之后就算是新的一天
-        final hasAdjustedToday = await _adjustmentService.hasAdjustedToday(userId);
+      print('Current local time: ${now.toString()}');
+      print('Today string: $today');
+      
+      // 检查今天是否已经进行过调整
+      final hasAdjustedToday = await _adjustmentService.hasAdjustedToday(userId);
+      
+      if (!hasAdjustedToday) {
+        // 检查昨天的摄入数据是否存在
+        final yesterday = now.subtract(Duration(days: 1));
+        final yesterdayStr = '${yesterday.year}-${yesterday.month.toString().padLeft(2, '0')}-${yesterday.day.toString().padLeft(2, '0')}';
         
-        if (!hasAdjustedToday) {
-          print('Found missed adjustment for today: $today');
-          print('Current time: ${now.toIso8601String()}');
+        print('Checking for yesterday\'s intake data: $yesterdayStr');
+        
+        // 获取昨天的摄入历史
+        final intakeHistory = await _adjustmentService.getUserIntakeHistory(userId, 1);
+        
+        if (intakeHistory.isNotEmpty && intakeHistory.first['logged']) {
+          print('Found yesterday\'s intake data, performing adjustment for today: $today');
+          print('Current time: ${now.toString()}');
           
-          // 立即执行错过的调整
+          // 执行今天的调整（基于昨天的摄入数据）
           final result = await _adjustmentService.performDailyAdjustment(userId);
           
           if (result['success']) {
@@ -214,8 +227,10 @@ class AutoAdjustmentService {
             print('Missed adjustment not needed: ${result['reason']}');
           }
         } else {
-          print('Today\'s adjustment already completed');
+          print('No intake data available for yesterday, skipping adjustment');
         }
+      } else {
+        print('Today\'s adjustment already completed');
       }
     } catch (e) {
       print('Error checking missed adjustments: $e');
@@ -295,7 +310,7 @@ class AutoAdjustmentService {
   Future<void> _initializeLocalNotifications() async {
     try {
       const AndroidInitializationSettings initializationSettingsAndroid =
-          AndroidInitializationSettings('@mipmap/ic_launcher');
+          AndroidInitializationSettings('@mipmap/launcher_icon');
       
       const DarwinInitializationSettings initializationSettingsIOS =
           DarwinInitializationSettings(

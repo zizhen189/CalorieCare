@@ -10,7 +10,7 @@
     <application
         android:label="caloriecare"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/launcher_icon">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -42,7 +42,7 @@
         <!-- Firebase Messaging configuration -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_icon"
-            android:resource="@mipmap/ic_launcher" />
+            android:resource="@mipmap/launcher_icon" />
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="caloriecare_default_channel" />

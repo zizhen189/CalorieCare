@@ -87,7 +87,7 @@ class FCMService {
   /// 初始化本地通知
   Future<void> _initializeLocalNotifications() async {
     const AndroidInitializationSettings initializationSettingsAndroid =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
+        AndroidInitializationSettings('@mipmap/launcher_icon');
     
     const DarwinInitializationSettings initializationSettingsIOS =
         DarwinInitializationSettings(

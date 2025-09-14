@@ -7,16 +7,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 class CalorieAdjustmentService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  /// 获取今天的日期字符串
+  /// 获取今天的日期字符串（使用本地时间）
   String _getTodayDate() {
-    return DateFormat('yyyy-MM-dd').format(DateTime.now());
+    final now = DateTime.now();
+    return '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
   }
 
-  /// 获取指定天数前的日期字符串
+  /// 获取指定天数前的日期字符串（使用本地时间）
   String _getDateBefore(int days) {
-    return DateFormat('yyyy-MM-dd').format(
-      DateTime.now().subtract(Duration(days: days))
-    );
+    final date = DateTime.now().subtract(Duration(days: days));
+    return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
   }
 
   /// 生成新的调整ID
@@ -124,6 +124,11 @@ class CalorieAdjustmentService {
     return bmr * activityMultiplier;
   }
 
+  /// 获取用户过去N天的摄入量数据（公共方法）
+  Future<List<Map<String, dynamic>>> getUserIntakeHistory(String userId, int days) async {
+    return await _getUserIntakeHistory(userId, days);
+  }
+
   /// 获取用户过去N天的摄入量数据
   Future<List<Map<String, dynamic>>> _getUserIntakeHistory(String userId, int days) async {
     List<Map<String, dynamic>> intakeHistory = [];
@@ -175,6 +180,15 @@ class CalorieAdjustmentService {
 
   /// 获取用户当前生效的目标卡路里（显示用）
   Future<double> _getCurrentTargetCalories(String userId) async {
+    // 首先检查自动调整是否启用
+    final autoAdjustmentEnabled = await this.isAutoAdjustmentEnabled(userId);
+    if (!autoAdjustmentEnabled) {
+      // 如果自动调整已禁用，直接返回原始目标
+      final baseTarget = await _getBaseTargetCalories(userId);
+      print('Auto adjustment disabled, using base target: $baseTarget');
+      return baseTarget;
+    }
+    
     // 首先检查用户当前的目标类型
     final targetQuery = await _firestore
         .collection('Target')
@@ -193,9 +207,8 @@ class CalorieAdjustmentService {
       }
     }
     
-    // 如果用户还在 gain/loss 模式，检查调整记录
-    final today = DateTime.now();
-    final todayStr = today.toIso8601String().split('T')[0];
+    // 如果用户还在 gain/loss 模式且自动调整启用，检查调整记录
+    final todayStr = _getTodayDate();
     
     final todayAdjustmentQuery = await _firestore
         .collection('CalorieAdjustment')
@@ -211,8 +224,7 @@ class CalorieAdjustmentService {
     }
     
     // 如果今天没有调整，检查昨天是否有调整记录
-    final yesterday = today.subtract(Duration(days: 1));
-    final yesterdayStr = yesterday.toIso8601String().split('T')[0];
+    final yesterdayStr = _getDateBefore(1);
     
     final yesterdayAdjustmentQuery = await _firestore
         .collection('CalorieAdjustment')
@@ -278,8 +290,8 @@ class CalorieAdjustmentService {
       }
       
       final yesterdayIntake = intakeHistory.first['totalCalories'] as int;
-      final baseTarget = await _getBaseTargetCalories(userId); // 使用原始基准目标
-      final currentDisplayTarget = await _getCurrentTargetCalories(userId); // 当前显示的目标
+      final baseTarget = await _getBaseTargetCalories(userId); // 原始基准目标（用于记录）
+      final currentDisplayTarget = await _getCurrentTargetCalories(userId); // 当前生效的目标（用于计算）
       final bmr = _calculateBMR(userData);
       final tdee = _calculateTDEE(userData);
       
@@ -297,8 +309,8 @@ class CalorieAdjustmentService {
       
       final gender = userData['Gender'] ?? 'male';
       
-      // 检查是否需要调整（基于目标类型，使用原始目标）
-      bool shouldAdjust = _shouldAdjustBasedOnGoal(goal, yesterdayIntake, baseTarget);
+      // 检查是否需要调整（基于目标类型，使用当前生效的目标）
+      bool shouldAdjust = _shouldAdjustBasedOnGoal(goal, yesterdayIntake, currentDisplayTarget);
       
       if (!shouldAdjust) {
         return {
@@ -309,19 +321,19 @@ class CalorieAdjustmentService {
         };
       }
       
-      // 计算新目标：基于原始目标和昨天摄入量的差值
-      double deviation = yesterdayIntake - baseTarget;
-      double newTarget = baseTarget - deviation;
+      // 计算新目标：基于当前生效目标和昨天摄入量的差值
+      double deviation = yesterdayIntake - currentDisplayTarget;
+      double newTarget = currentDisplayTarget - deviation;
       
       print('=== Daily Adjustment Calculation ===');
       print('Base target (original): $baseTarget');
       print('Current display target: $currentDisplayTarget');
       print('Yesterday intake: $yesterdayIntake');
-      print('Deviation from base: $deviation');
+      print('Deviation from current target: $deviation');
       print('New calculated target: $newTarget');
       
       // 先检查调整幅度，如果太小则不进行调整
-      if ((newTarget - baseTarget).abs() < 50) {
+      if ((newTarget - currentDisplayTarget).abs() < 50) {
         return {
           'success': false,
           'reason': 'Adjustment too small',
@@ -651,7 +663,7 @@ class CalorieAdjustmentService {
       // 获取指定日期前一天的摄入量
       final targetDate = DateTime.parse(date);
       final dayBefore = targetDate.subtract(Duration(days: 1));
-      final dayBeforeStr = dayBefore.toIso8601String().split('T')[0];
+      final dayBeforeStr = '${dayBefore.year}-${dayBefore.month.toString().padLeft(2, '0')}-${dayBefore.day.toString().padLeft(2, '0')}';
       
       final intakeHistory = await _getUserIntakeHistoryForDate(userId, dayBeforeStr);
       if (intakeHistory.isEmpty || !intakeHistory.first['logged']) {
@@ -663,6 +675,26 @@ class CalorieAdjustmentService {
       
       final intakeAmount = intakeHistory.first['totalCalories'] as int;
       final baseTarget = await _getBaseTargetCalories(userId);
+      
+      // 获取指定日期应该使用的目标（检查前一天是否有调整）
+      
+      // 检查前一天是否有调整记录
+      final dayBeforeAdjustmentQuery = await _firestore
+          .collection('CalorieAdjustment')
+          .where('UserID', isEqualTo: userId)
+          .where('AdjustDate', isEqualTo: dayBeforeStr)
+          .get();
+      
+      double targetToUse = baseTarget;
+      if (dayBeforeAdjustmentQuery.docs.isNotEmpty) {
+        // 使用前一天的调整目标
+        final data = dayBeforeAdjustmentQuery.docs.first.data();
+        targetToUse = (data['AdjustTargetCalories']).toDouble();
+        print('Using day before adjustment for $date: $targetToUse');
+      } else {
+        print('Using base target for $date: $targetToUse');
+      }
+      
       final bmr = _calculateBMR(userData);
       final tdee = _calculateTDEE(userData);
       
@@ -680,8 +712,8 @@ class CalorieAdjustmentService {
       
       final gender = userData['Gender'] ?? 'male';
       
-      // 检查是否需要调整
-      bool shouldAdjust = _shouldAdjustBasedOnGoal(goal, intakeAmount, baseTarget);
+      // 检查是否需要调整（使用应该使用的目标）
+      bool shouldAdjust = _shouldAdjustBasedOnGoal(goal, intakeAmount, targetToUse);
       
       if (!shouldAdjust) {
         return {
@@ -690,12 +722,12 @@ class CalorieAdjustmentService {
         };
       }
       
-      // 计算新目标
-      double deviation = intakeAmount - baseTarget;
-      double newTarget = baseTarget - deviation;
+      // 计算新目标（基于应该使用的目标）
+      double deviation = intakeAmount - targetToUse;
+      double newTarget = targetToUse - deviation;
       
       // 先检查调整幅度，如果太小则不进行调整
-      if ((newTarget - baseTarget).abs() < 50) {
+      if ((newTarget - targetToUse).abs() < 50) {
         return {
           'success': false,
           'reason': 'Adjustment too small for $date',
@@ -708,7 +740,7 @@ class CalorieAdjustmentService {
       // 创建指定日期的调整记录
       await _createAdjustmentRecordForDate(
         userId: userId,
-        previousTarget: baseTarget,
+        previousTarget: targetToUse,
         newTarget: newTarget,
         date: date,
       );
@@ -717,9 +749,9 @@ class CalorieAdjustmentService {
       
       return {
         'success': true,
-        'previousTarget': baseTarget,
+        'previousTarget': targetToUse,
         'newTarget': newTarget,
-        'adjustment': newTarget - baseTarget,
+        'adjustment': newTarget - targetToUse,
         'reason': 'Retroactive adjustment for $date',
         'date': date,
       };

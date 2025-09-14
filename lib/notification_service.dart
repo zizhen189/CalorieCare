@@ -21,7 +21,7 @@ class NotificationService {
     print('=== Initializing Notification Service ===');
     
     const AndroidInitializationSettings initializationSettingsAndroid =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
+        AndroidInitializationSettings('@mipmap/launcher_icon');
 
     const DarwinInitializationSettings initializationSettingsIOS =
         DarwinInitializationSettings(
@@ -151,7 +151,7 @@ class NotificationService {
       enableVibration: true,
       playSound: true,
       channelShowBadge: true,
-      icon: '@mipmap/ic_launcher',
+      icon: '@mipmap/launcher_icon',
     );
 
     const DarwinNotificationDetails iOSPlatformChannelSpecifics =
