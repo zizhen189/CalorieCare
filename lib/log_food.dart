@@ -163,145 +163,483 @@ class _LogFoodPageState extends State<LogFoodPage> with TickerProviderStateMixin
       return [];
     }
     
-    final String lowerQuery = query.toLowerCase().trim();
-    final String upperQuery = query.toUpperCase();
-    final String capitalizedQuery = query.substring(0, 1).toUpperCase() + 
-        (query.length > 1 ? query.substring(1).toLowerCase() : '');
+    final String normalizedQuery = _normalizeSearchQuery(query);
+    final List<String> queryWords = normalizedQuery.split(' ').where((w) => w.isNotEmpty).toList();
     
     final Map<String, DocumentSnapshot> uniqueResults = {};
     
-    // Exact match
+    // 1. 精确匹配（最高优先级）
+    await _performExactMatch(query, uniqueResults);
+    
+    // 2. 智能单词匹配
+    await _performSmartWordMatch(query, queryWords, uniqueResults);
+    
+    // 3. 前缀匹配
+    await _performPrefixMatch(query, uniqueResults);
+    
+    // 4. 多词智能搜索
+    if (queryWords.length > 1) {
+      await _performMultiWordSmartSearch(query, queryWords, uniqueResults);
+    }
+    
+    // 5. 模糊匹配作为后备
+    if (uniqueResults.length < 10) {
+      await _performFuzzyMatch(query, uniqueResults);
+    }
+    
+    // 6. 计算匹配分数并排序
+    final List<MapEntry<String, DocumentSnapshot>> scoredResults = uniqueResults.entries.map((entry) {
+      String foodName = (entry.value['FoodName'] ?? '').toString();
+      double score = _calculateSmartMatchScore(foodName, query);
+      return MapEntry(entry.key, entry.value);
+    }).toList();
+    
+    // 按分数排序（从高到低）
+    scoredResults.sort((a, b) {
+      String foodNameA = (a.value['FoodName'] ?? '').toString();
+      String foodNameB = (b.value['FoodName'] ?? '').toString();
+      double scoreA = _calculateSmartMatchScore(foodNameA, query);
+      double scoreB = _calculateSmartMatchScore(foodNameB, query);
+      
+      // 调试输出
+      if (query.toLowerCase().contains('banana') || 
+          query.toLowerCase().contains('apple') || 
+          query.toLowerCase().contains('appl') ||
+          query.toLowerCase().contains('app') ||
+          query.toLowerCase().contains('bana') ||
+          query.toLowerCase().contains('ban') ||
+          query.toLowerCase().contains('orange') ||
+          query.toLowerCase().contains('orang') ||
+          query.toLowerCase().contains('ora') ||
+          query.toLowerCase().contains('grape') ||
+          query.toLowerCase().contains('grap') ||
+          query.toLowerCase().contains('strawberry') ||
+          query.toLowerCase().contains('strawberr') ||
+          query.toLowerCase().contains('straw') ||
+          query.toLowerCase().contains('blueberry') ||
+          query.toLowerCase().contains('blueberr') ||
+          query.toLowerCase().contains('blue')) {
+        print('Search Debug - Query: "$query"');
+        print('  ${foodNameA}: score = $scoreA');
+        print('  ${foodNameB}: score = $scoreB');
+      }
+      
+      return scoreB.compareTo(scoreA);
+    });
+    
+    // 调试输出前5个结果
+    if (query.toLowerCase().contains('banana') || 
+        query.toLowerCase().contains('apple') || 
+        query.toLowerCase().contains('appl') ||
+        query.toLowerCase().contains('app') ||
+        query.toLowerCase().contains('bana') ||
+        query.toLowerCase().contains('ban') ||
+        query.toLowerCase().contains('orange') ||
+        query.toLowerCase().contains('orang') ||
+        query.toLowerCase().contains('ora') ||
+        query.toLowerCase().contains('grape') ||
+        query.toLowerCase().contains('grap') ||
+        query.toLowerCase().contains('strawberry') ||
+        query.toLowerCase().contains('strawberr') ||
+        query.toLowerCase().contains('straw') ||
+        query.toLowerCase().contains('blueberry') ||
+        query.toLowerCase().contains('blueberr') ||
+        query.toLowerCase().contains('blue')) {
+      print('Top 5 results for "$query":');
+      for (int i = 0; i < scoredResults.length && i < 5; i++) {
+        String foodName = (scoredResults[i].value['FoodName'] ?? '').toString();
+        double score = _calculateSmartMatchScore(foodName, query);
+        print('  ${i + 1}. $foodName (score: $score)');
+      }
+      print('Total results found: ${scoredResults.length}');
+      
+      // 特别检查Banana, raw的分数
+      if (query.toLowerCase().contains('banana') || 
+          query.toLowerCase().contains('bana') || 
+          query.toLowerCase().contains('ban')) {
+        for (var entry in scoredResults) {
+          String foodName = (entry.value['FoodName'] ?? '').toString();
+          if (foodName.toLowerCase().contains('banana, raw')) {
+            double score = _calculateSmartMatchScore(foodName, query);
+            print('Banana, raw found at position ${scoredResults.indexOf(entry) + 1} with score: $score');
+            break;
+          }
+        }
+      }
+      
+      // 特别检查Apple的分数
+      if (query.toLowerCase().contains('apple') || 
+          query.toLowerCase().contains('appl') || 
+          query.toLowerCase().contains('app')) {
+        for (var entry in scoredResults) {
+          String foodName = (entry.value['FoodName'] ?? '').toString();
+          if (foodName.toLowerCase() == 'apple') {
+            double score = _calculateSmartMatchScore(foodName, query);
+            print('Apple found at position ${scoredResults.indexOf(entry) + 1} with score: $score');
+            break;
+          }
+        }
+      }
+      
+      // 特别检查Orange的分数
+      if (query.toLowerCase().contains('orange') || 
+          query.toLowerCase().contains('orang') || 
+          query.toLowerCase().contains('ora')) {
+        for (var entry in scoredResults) {
+          String foodName = (entry.value['FoodName'] ?? '').toString();
+          if (foodName.toLowerCase() == 'orange') {
+            double score = _calculateSmartMatchScore(foodName, query);
+            print('Orange found at position ${scoredResults.indexOf(entry) + 1} with score: $score');
+            break;
+          }
+        }
+      }
+    }
+    
+    return scoredResults.map((entry) => entry.value).take(limit).toList();
+  }
+
+  // 新的智能搜索辅助函数
+  
+  // 标准化搜索查询
+  String _normalizeSearchQuery(String query) {
+    return query.toLowerCase().trim().replaceAll(RegExp(r'[,\-_\.]'), ' ').replaceAll(RegExp(r'\s+'), ' ');
+  }
+  
+  // 精确匹配
+  Future<void> _performExactMatch(String query, Map<String, DocumentSnapshot> uniqueResults) async {
+    try {
+      // 尝试多种大小写变体
+      final variations = [
+        query,
+        query.toLowerCase(),
+        query.toUpperCase(),
+        query.substring(0, 1).toUpperCase() + (query.length > 1 ? query.substring(1).toLowerCase() : ''),
+      ];
+      
+      for (String variation in variations) {
+        if (variation.trim().isEmpty) continue;
+        
     final exactMatch = await FirebaseFirestore.instance
         .collection('Food')
-        .where('FoodName', isEqualTo: query)
+            .where('FoodName', isEqualTo: variation)
         .limit(10)
         .get();
     
     for (var doc in exactMatch.docs) {
       uniqueResults[doc.id] = doc;
+        }
+      }
+    } catch (e) {
+      print('Exact match search failed: $e');
     }
+  }
+  
+  // 智能单词匹配
+  Future<void> _performSmartWordMatch(String query, List<String> queryWords, Map<String, DocumentSnapshot> uniqueResults) async {
+    if (queryWords.isEmpty) return;
     
-    // 添加单词边界匹配查询
-    // 例如，搜索"apple"时，应该优先匹配"Apple"而不是"Pineapple"
-    final List<String> queryWords = query.toLowerCase().split(' ').where((w) => w.isNotEmpty).toList();
-    if (queryWords.length == 1) {
-      try {
-        final wordBoundaryQuery = await FirebaseFirestore.instance
+    try {
+      // 获取所有食物数据
+      final allFoods = await FirebaseFirestore.instance
             .collection('Food')
-            .where('SearchKeywords', arrayContains: queryWords[0])
-            .limit(30)
+          .limit(500)
             .get();
             
-        for (var doc in wordBoundaryQuery.docs) {
-          String foodName = (doc['FoodName'] ?? '').toString().toLowerCase();
-          List<String> foodNameWords = foodName.split(' ');
+      for (var doc in allFoods.docs) {
+        if (uniqueResults.containsKey(doc.id)) continue;
+        
+        String foodName = (doc['FoodName'] ?? '').toString();
+        String normalizedFoodName = _normalizeSearchQuery(foodName);
+        List<String> foodWords = normalizedFoodName.split(' ').where((w) => w.isNotEmpty).toList();
+        
           // 检查是否有完全匹配的单词
-          if (foodNameWords.contains(queryWords[0])) {
+        for (String queryWord in queryWords) {
+          if (foodWords.contains(queryWord)) {
             uniqueResults[doc.id] = doc;
+            break;
+          }
           }
         }
       } catch (e) {
-        print('SearchKeywords field not found, skipping array-contains search');
-      }
+      print('Smart word match failed: $e');
     }
-    
-    // Multiple case variations matching
-    final searchVariations = [query, lowerQuery, upperQuery, capitalizedQuery];
-    
-    for (String searchTerm in searchVariations) {
-      // 确保搜索词不为空
-      if (searchTerm.trim().isEmpty) continue;
+  }
+  
+  // 前缀匹配
+  Future<void> _performPrefixMatch(String query, Map<String, DocumentSnapshot> uniqueResults) async {
+    try {
+      final variations = [
+        query,
+        query.toLowerCase(),
+        query.toUpperCase(),
+        query.substring(0, 1).toUpperCase() + (query.length > 1 ? query.substring(1).toLowerCase() : ''),
+      ];
+      
+      for (String variation in variations) {
+        if (variation.trim().isEmpty) continue;
       
       final startsWithQuery = await FirebaseFirestore.instance
           .collection('Food')
-          .where('FoodName', isGreaterThanOrEqualTo: searchTerm)
-          .where('FoodName', isLessThanOrEqualTo: '$searchTerm\uf8ff')
-          .limit(50) // 增加限制以获取更多潜在匹配项
+            .where('FoodName', isGreaterThanOrEqualTo: variation)
+            .where('FoodName', isLessThanOrEqualTo: '$variation\uf8ff')
+            .limit(50)
           .get();
       
       for (var doc in startsWithQuery.docs) {
         uniqueResults[doc.id] = doc;
       }
     }
-    
-    // Smart multi-word search
-    if (uniqueResults.length < 10) {
-      await _performMultiWordSearch(query, uniqueResults);
+    } catch (e) {
+      print('Prefix match failed: $e');
     }
-    
-    // Keyword search
-    if (uniqueResults.length < 10) {
-      final keywords = _generateSearchKeywords(query);
-      
-      for (String keyword in keywords.take(5)) {
-        try {
-          final keywordQuery = await FirebaseFirestore.instance
+  }
+  
+  // 多词智能搜索
+  Future<void> _performMultiWordSmartSearch(String query, List<String> queryWords, Map<String, DocumentSnapshot> uniqueResults) async {
+    try {
+      // 获取所有食物数据
+      final allFoods = await FirebaseFirestore.instance
               .collection('Food')
-              .where('SearchKeywords', arrayContains: keyword.toLowerCase())
-              .limit(25)
+          .limit(500)
               .get();
           
-          for (var doc in keywordQuery.docs) {
+      for (var doc in allFoods.docs) {
+        if (uniqueResults.containsKey(doc.id)) continue;
+        
+        String foodName = (doc['FoodName'] ?? '').toString();
+        String normalizedFoodName = _normalizeSearchQuery(foodName);
+        List<String> foodWords = normalizedFoodName.split(' ').where((w) => w.isNotEmpty).toList();
+        
+        // 检查是否包含所有查询词
+        bool containsAllWords = queryWords.every((word) => normalizedFoodName.contains(word));
+        
+        if (containsAllWords) {
             uniqueResults[doc.id] = doc;
           }
-        } catch (e) {
-          print('SearchKeywords field not found, skipping array-contains search');
+        
+        // 额外检查：如果查询词都能在食物名称的单词中找到
+        bool allWordsInFoodWords = queryWords.every((word) => foodWords.contains(word));
+        if (allWordsInFoodWords) {
+          uniqueResults[doc.id] = doc;
+        }
+        
+        // 特殊处理：检查前缀匹配
+        bool allWordsHavePrefixMatch = queryWords.every((queryWord) {
+          return foodWords.any((foodWord) => foodWord.startsWith(queryWord));
+        });
+        if (allWordsHavePrefixMatch) {
+          uniqueResults[doc.id] = doc;
+        }
+        
+        // 特殊处理：检查部分匹配（如"banana raw"匹配"Banana, raw"）
+        bool hasPartialMatches = queryWords.every((queryWord) {
+          return foodWords.any((foodWord) => 
+            foodWord.contains(queryWord) || queryWord.contains(foodWord));
+        });
+        if (hasPartialMatches) {
+          uniqueResults[doc.id] = doc;
         }
       }
+    } catch (e) {
+      print('Multi-word smart search failed: $e');
     }
-    
-    // Full search as fallback option
-    if (uniqueResults.length < 5) {
-      final fallbackQuery = await FirebaseFirestore.instance
+  }
+  
+  // 模糊匹配
+  Future<void> _performFuzzyMatch(String query, Map<String, DocumentSnapshot> uniqueResults) async {
+    try {
+      // 获取所有食物数据
+      final allFoods = await FirebaseFirestore.instance
           .collection('Food')
-          .limit(200)
+          .limit(500)
           .get();
       
-      final filtered = fallbackQuery.docs.where((doc) {
-        String name = (doc['FoodName'] ?? '').toString().toLowerCase();
-        return _isMatchingFoodName(name, lowerQuery);
-      }).take(20);
+      String normalizedQuery = _normalizeSearchQuery(query);
       
-      for (var doc in filtered) {
+      for (var doc in allFoods.docs) {
+        if (uniqueResults.containsKey(doc.id)) continue;
+        
+        String foodName = (doc['FoodName'] ?? '').toString();
+        String normalizedFoodName = _normalizeSearchQuery(foodName);
+        
+        // 简单的包含匹配
+        if (normalizedFoodName.contains(normalizedQuery)) {
         uniqueResults[doc.id] = doc;
+        }
+      }
+    } catch (e) {
+      print('Fuzzy match failed: $e');
+    }
+  }
+  
+  // 智能匹配分数计算
+  double _calculateSmartMatchScore(String foodName, String query) {
+    String normalizedFoodName = _normalizeSearchQuery(foodName);
+    String normalizedQuery = _normalizeSearchQuery(query);
+    List<String> foodWords = normalizedFoodName.split(' ').where((w) => w.isNotEmpty).toList();
+    List<String> queryWords = normalizedQuery.split(' ').where((w) => w.isNotEmpty).toList();
+    
+    double score = 0.0;
+    
+    // 1. 完全匹配（最高分）
+    if (normalizedFoodName == normalizedQuery) {
+      return 100.0;
+    }
+    
+    // 2. 单个单词查询处理
+    if (queryWords.length == 1) {
+      String queryWord = queryWords[0];
+      
+      // 检查是否有完全匹配的单词
+      if (foodWords.contains(queryWord)) {
+        // 如果食物名称就是单个单词，给予最高分
+        if (foodWords.length == 1) {
+          return 99.0;
+        }
+        // 如果食物名称包含该单词，给予高分
+        return 95.0;
+      }
+      
+      // 检查前缀匹配 - 这是关键！
+      for (String foodWord in foodWords) {
+        if (foodWord.startsWith(queryWord)) {
+          // 基础前缀匹配分数
+          double prefixScore = 80.0;
+          
+          // 根据食物名称的复杂度调整分数
+          if (foodWords.length == 1) {
+            // 单个单词：最高优先级
+            prefixScore = 98.0;
+          } else if (foodWords.length == 2) {
+            // 两个单词：高优先级
+            prefixScore = 90.0;
+          } else if (foodWords.length == 3) {
+            // 三个单词：中等优先级
+            prefixScore = 85.0;
+          } else {
+            // 更多单词：较低优先级
+            prefixScore = 75.0;
+          }
+          
+          // 特殊处理：简单食物类型
+          if (foodWords.length <= 2) {
+            // 检查是否是简单的食物类型
+            List<String> simpleTypes = ['raw', 'fresh', 'whole', 'organic', 'natural'];
+            bool hasSimpleType = foodWords.any((word) => simpleTypes.contains(word));
+            if (hasSimpleType) {
+              prefixScore += 5.0; // 简单类型奖励
+            }
+          }
+          
+          return prefixScore;
+        }
+      }
+      
+      // 检查是否以该单词开头
+      if (normalizedFoodName.startsWith(queryWord)) {
+        return 70.0;
+      }
+      
+      // 检查是否包含该单词
+      if (normalizedFoodName.contains(queryWord)) {
+        return 50.0;
       }
     }
     
-    final sortedResults = uniqueResults.values.toList();
-    
-    // 确保查询不为空
-    if (lowerQuery.isNotEmpty) {
-      sortedResults.sort((a, b) {
-        String nameA = (a['FoodName'] ?? '').toString().toLowerCase();
-        String nameB = (b['FoodName'] ?? '').toString().toLowerCase();
-        
-        // 计算匹配分数
-        double scoreA = _calculateMatchScore(nameA, lowerQuery);
-        double scoreB = _calculateMatchScore(nameB, lowerQuery);
-        
-        // 首先按匹配分数排序
-        if ((scoreA - scoreB).abs() > 0.1) { // 使用阈值避免浮点数比较问题
-          return scoreB.compareTo(scoreA); // 降序排列，分数高的在前
-        }
-        
-        // 如果分数相近，优先显示名称较短的食物
-        if (nameA.length != nameB.length) {
-          return nameA.length - nameB.length;
-        }
-        
-        // 最后按字母顺序排序
-        return nameA.compareTo(nameB);
-      });
+    // 3. 多词匹配
+    if (queryWords.length > 1) {
+      int exactWordMatches = 0;
+      int partialWordMatches = 0;
+      int prefixMatches = 0;
+      
+      for (String queryWord in queryWords) {
+        if (foodWords.contains(queryWord)) {
+          exactWordMatches++;
     } else {
-      // 如果查询为空，按字母顺序排序
-      sortedResults.sort((a, b) {
-        String nameA = (a['FoodName'] ?? '').toString().toLowerCase();
-        String nameB = (b['FoodName'] ?? '').toString().toLowerCase();
-        return nameA.compareTo(nameB);
-      });
+          // 检查前缀匹配
+          bool hasPrefixMatch = false;
+          for (String foodWord in foodWords) {
+            if (foodWord.startsWith(queryWord)) {
+              prefixMatches++;
+              hasPrefixMatch = true;
+              break;
+            }
+          }
+          if (!hasPrefixMatch && normalizedFoodName.contains(queryWord)) {
+            partialWordMatches++;
+          }
+        }
+      }
+      
+      // 所有词都完全匹配
+      if (exactWordMatches == queryWords.length) {
+        score += 85.0;
+        
+        // 词序匹配奖励
+        bool inOrder = true;
+        int lastIndex = -1;
+        for (String word in queryWords) {
+          int currentIndex = normalizedFoodName.indexOf(word);
+          if (currentIndex <= lastIndex) {
+            inOrder = false;
+            break;
+          }
+          lastIndex = currentIndex;
+        }
+        if (inOrder) {
+          score += 15.0;
+        }
+      }
+      // 部分词匹配
+      else if (exactWordMatches > 0 || prefixMatches > 0 || partialWordMatches > 0) {
+        score += exactWordMatches * 40.0 + prefixMatches * 35.0 + partialWordMatches * 20.0;
+      }
     }
     
-    return sortedResults.take(limit).toList();
+    // 4. 前缀匹配
+    if (normalizedFoodName.startsWith(normalizedQuery)) {
+      score += 60.0;
+    }
+    
+    // 5. 包含匹配
+    if (normalizedFoodName.contains(normalizedQuery)) {
+      score += 30.0;
+    }
+    
+    // 6. 长度因子（较短的名字优先）- 大幅增加权重
+    double lengthFactor = 100.0 / (normalizedFoodName.length + 1);
+    score += lengthFactor * 3.0; // 进一步增加权重
+    
+    // 7. 精确匹配奖励
+    if (normalizedFoodName.startsWith(normalizedQuery)) {
+      score += 10.0;
+    }
+    
+    // 8. 简单名称奖励 - 重新设计
+    if (foodWords.length == 1) {
+      score += 15.0; // 单个单词最高奖励
+    } else if (foodWords.length == 2) {
+      score += 10.0; // 两个单词高奖励
+    } else if (foodWords.length == 3) {
+      score += 5.0; // 三个单词中等奖励
+    }
+    
+    // 9. 简单食物类型奖励
+    List<String> simpleTypes = ['raw', 'fresh', 'whole', 'organic', 'natural', 'plain'];
+    bool hasSimpleType = foodWords.any((word) => simpleTypes.contains(word));
+    if (hasSimpleType && foodWords.length <= 3) {
+      score += 8.0;
+    }
+    
+    // 10. 精确单词匹配奖励
+    for (String queryWord in queryWords) {
+      if (foodWords.contains(queryWord)) {
+        score += 5.0;
+      }
+    }
+    
+    return score;
   }
 
   // Smart multi-word search
