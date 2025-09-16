@@ -181,7 +181,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _loadAdjustedTarget(); // Load adjusted target if exists
     _startAutoAdjustment(); // Start auto adjustment service
     _checkWeightRecord(); // Check if weight has been recorded today
-    _startGlobalNotificationManager(); // Start global notification manager (primary)
+    
+    // 延迟启动全局通知管理器，确保其他初始化完成
+    Future.delayed(Duration(milliseconds: 500), () {
+      if (mounted) {
+        _startGlobalNotificationManager(); // Start global notification manager (primary)
+      }
+    });
     // 注释掉旧服务以避免重复通知
     // _startCustomMessageListener(); // Start custom message listener  
     // _startInvitationListener(); // Start invitation listener
@@ -425,6 +431,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   // Start global notification manager (primary notification system)
   Future<void> _startGlobalNotificationManager() async {
+    print('=== _startGlobalNotificationManager called ===');
     UserModel? currentUser = widget.user ?? await SessionService.getUserSession();
     if (currentUser == null || currentUser.userID.isEmpty) {
       print('No current user found, cannot start global notification manager');
@@ -440,11 +447,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           print('=== GLOBAL MANAGER INVITATION RECEIVED ===');
           print('Supervision ID: $supervisionId');
           print('Supervision Data: $supervisionData');
+          print('Widget mounted: ${mounted}');
+          print('Context: $context');
           
           // Show invitation dialog with delay to ensure UI is ready
           Future.delayed(Duration(milliseconds: 100), () {
+            print('Future.delayed callback executed for invitation dialog');
+            print('Widget mounted after delay: ${mounted}');
             if (mounted) {
+              print('About to show invitation dialog...');
               _showInvitationDialog(supervisionId, supervisionData);
+            } else {
+              print('Widget not mounted, cannot show dialog');
             }
           });
         },
@@ -460,6 +474,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       // 输出状态信息用于调试
       final status = _globalNotificationManager.getStatus();
       print('Global Notification Manager Status: $status');
+      
+      // 测试回调函数是否正确设置
+      print('=== TESTING CALLBACK AFTER SETUP ===');
+      // 这里我们不能直接测试回调，但可以确认监听器已启动
       
       // 全局通知管理器启动完成
     } catch (e) {
@@ -541,11 +559,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     print('SupervisionDocId: $supervisionDocId');
     print('SupervisionData: $supervisionData');
     print('Context mounted: ${mounted}');
+    print('Context: $context');
     
     if (!mounted) {
       print('Widget not mounted, cannot show dialog');
       return;
     }
+    
+    print('About to call showDialog...');
     
     showDialog(
       context: context,

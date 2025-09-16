@@ -175,6 +175,10 @@ class GlobalNotificationManager {
     _currentUserId = userId;
     _onInvitationReceived = onInvitationReceived;
     _onMessageReceived = onMessageReceived;
+    
+    print('=== CALLBACK SETUP ===');
+    print('_onInvitationReceived set: ${_onInvitationReceived != null}');
+    print('_onMessageReceived set: ${_onMessageReceived != null}');
 
     try {
       // 请求通知权限（重要：确保每个设备都有权限）
@@ -189,6 +193,12 @@ class GlobalNotificationManager {
       
       _listenersActive = true;
       print('User listeners started successfully');
+      
+      // 验证回调函数是否正确设置
+      print('=== FINAL CALLBACK VERIFICATION ===');
+      print('_onInvitationReceived: ${_onInvitationReceived != null}');
+      print('_onMessageReceived: ${_onMessageReceived != null}');
+      print('_listenersActive: $_listenersActive');
       
       // 输出调试信息
       await _debugNotificationSetup();
@@ -302,32 +312,41 @@ class GlobalNotificationManager {
           // 创建唯一标识符用于去重
           final notificationId = '${eventKey}_${supervisionId}_invitation';
           
-          // 检查是否已经处理过这个通知
-          if (_processedNotifications.contains(notificationId)) {
-            print('Notification already processed, skipping: $notificationId');
-            await event.snapshot.ref.remove(); // 清理重复数据
-            return;
+          // 检查是否已经处理过这个通知（仅用于通知显示去重）
+          bool isNotificationDuplicate = _processedNotifications.contains(notificationId);
+          
+          if (!isNotificationDuplicate) {
+            // 标记为已处理（仅用于通知去重）
+            _processedNotifications.add(notificationId);
+            print('Processing new invitation notification: $notificationId');
+            
+            // 显示本地通知
+            await _showInvitationNotification(
+              title: data['title']?.toString() ?? 'Supervisor Invitation',
+              body: data['message']?.toString() ?? 'You have received a supervisor invitation',
+              data: Map<String, String>.from(data.map((k, v) => MapEntry(k.toString(), v.toString()))),
+            );
+          } else {
+            print('Notification already shown, but will still show dialog: $notificationId');
           }
           
-          // 标记为已处理
-          _processedNotifications.add(notificationId);
-          print('Processing new invitation notification: $notificationId');
+          // 始终触发回调显示对话框（即使通知已显示过）
+          print('=== CALLBACK CHECK BEFORE TRIGGER ===');
+          print('_onInvitationReceived: ${_onInvitationReceived != null}');
+          print('_listenersActive: $_listenersActive');
+          print('_currentUserId: $_currentUserId');
           
-          // 显示本地通知
-          await _showInvitationNotification(
-            title: data['title']?.toString() ?? 'Supervisor Invitation',
-            body: data['message']?.toString() ?? 'You have received a supervisor invitation',
-            data: Map<String, String>.from(data.map((k, v) => MapEntry(k.toString(), v.toString()))),
-          );
-          
-          // 触发回调
           if (_onInvitationReceived != null) {
             final supervisionData = {
               'InviterUserName': data['inviterName'] ?? 'Unknown',
               'InviterId': data['inviterId'] ?? '',
               'SupervisionId': supervisionId,
             };
+            print('Triggering invitation dialog callback for: $supervisionId');
             _onInvitationReceived!(supervisionId, supervisionData);
+          } else {
+            print('ERROR: _onInvitationReceived callback is null!');
+            print('This means startUserListeners was not called or failed');
           }
           
           // 删除已处理的通知

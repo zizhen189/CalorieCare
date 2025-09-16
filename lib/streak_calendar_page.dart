@@ -11,6 +11,7 @@ import 'package:caloriecare/profile_page.dart'; // Added import for ProfilePage
 import 'package:caloriecare/session_service.dart'; // Added import for SessionService
 import 'custom_message_page.dart'; // Add import for CustomMessagePage
 import 'notification_service.dart'; // Add import for NotificationService
+import 'global_notification_manager.dart'; // Add import for GlobalNotificationManager
 
 // Model for displaying supervision details
 class SupervisionDetail {
@@ -769,26 +770,7 @@ class _StreakCalendarPageState extends State<StreakCalendarPage> with TickerProv
                     color: Colors.black87,
                   ),
                 ),
-                const SizedBox(height: 3), // Reduced from 4
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3), // Reduced padding
-                  decoration: BoxDecoration(
-                    color: hasLoggedToday 
-                      ? const Color(0xFF5AA162).withOpacity(0.1)
-                      : Colors.grey.shade100,
-                    borderRadius: BorderRadius.circular(6), // Reduced from 8
-                  ),
-                  child: Text(
-                    hasLoggedToday ? 'Logged today' : 'Not logged yet',
-                    style: TextStyle(
-                      fontSize: 11, // Reduced from 12
-                      fontWeight: FontWeight.w600,
-                      color: hasLoggedToday 
-                        ? const Color(0xFF5AA162)
-                        : Colors.grey.shade600,
-                    ),
-                  ),
-                ),
+                 // Status text removed as requested
               ],
             ),
           ),
@@ -1017,13 +999,19 @@ class _StreakCalendarPageState extends State<StreakCalendarPage> with TickerProv
       final supervisionData = supervisionQuery.docs.first.data();
       final supervisorUserId = supervisionData['SupervisorID'];
       
-      // Use RTDB notification service
-      final notificationService = NotificationService();
-      await notificationService.sendCustomMessage(
+      // Use Global Notification Manager for immediate delivery
+      final globalNotificationManager = GlobalNotificationManager();
+      await globalNotificationManager.sendRTDBNotification(
         receiverId: supervisorUserId,
-        message: message.isNotEmpty ? message : "Don't forget to log your meals today! 🍽️",
-        senderId: currentUser.userID,
-        senderName: currentUser.firstName ?? 'Supervisor',
+        type: 'notification',
+        data: {
+          'title': 'Reminder from ${currentUser.firstName ?? 'Supervisor'}',
+          'message': message.isNotEmpty ? message : "Don't forget to log your meals today! 🍽️",
+          'senderId': currentUser.userID,
+          'senderName': currentUser.firstName ?? 'Supervisor',
+          'timestamp': DateTime.now().toIso8601String(),
+          'type': 'log_food_reminder',
+        },
       );
       
       ScaffoldMessenger.of(context).showSnackBar(

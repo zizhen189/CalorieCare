@@ -8,6 +8,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'streak_service.dart'; // Added import for StreakService
 import 'custom_message_page.dart'; // Added import for CustomMessagePage
 import 'invite_supervisor_page.dart'; // Added import for InviteSupervisorPage
+import 'global_notification_manager.dart'; // Added import for GlobalNotificationManager
 
 class SupervisorStreakPage extends StatefulWidget {
   final List<Map<String, dynamic>> supervisors;
@@ -230,18 +231,20 @@ class _SupervisorStreakPageState extends State<SupervisorStreakPage> with Single
       final supervisionData = supervisionQuery.docs.first.data();
       final supervisorUserId = supervisionData['SupervisorID'];
       
-      // Store notification in Firebase
-      await FirebaseFirestore.instance.collection('Notifications').add({
-        'notificationId': notificationId,
-        'title': 'Meal Reminder from ${currentUser.firstName}',
-        'message': message.isNotEmpty ? message : "Don't forget to log your meals today! 🍽️",
-        'senderUserId': currentUser.userID,
-        'recipientUserId': supervisorUserId,
-        'supervisionId': supervisionId,
-        'createdAt': FieldValue.serverTimestamp(),
-        'isRead': false,
-        'type': 'meal_reminder',
-      });
+      // Use Global Notification Manager for immediate delivery
+      final globalNotificationManager = GlobalNotificationManager();
+      await globalNotificationManager.sendRTDBNotification(
+        receiverId: supervisorUserId,
+        type: 'notification',
+        data: {
+          'title': 'Reminder from ${currentUser.firstName ?? 'Supervisor'}',
+          'message': message.isNotEmpty ? message : "Don't forget to log your meals today! 🍽️",
+          'senderId': currentUser.userID,
+          'senderName': currentUser.firstName ?? 'Supervisor',
+          'timestamp': DateTime.now().toIso8601String(),
+          'type': 'log_food_reminder',
+        },
+      );
       
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Message sent successfully!')),

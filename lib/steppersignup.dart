@@ -746,8 +746,8 @@ class _StepperSignUpPageState extends State<StepperSignUpPage> {
   Widget _buildBirthDateSelection() {
     // Calculate the date 18 years ago
     final DateTime now = DateTime.now();
-    final DateTime minDate = DateTime(now.year - 19, now.month, now.day);
-    final DateTime maxDate = DateTime(now.year - 19, now.month, now.day);
+    final DateTime minDate = DateTime(now.year - 18, now.month, now.day);
+    final DateTime maxDate = DateTime(now.year - 18, now.month, now.day);
 
     return Padding(
       padding: const EdgeInsets.all(20.0),

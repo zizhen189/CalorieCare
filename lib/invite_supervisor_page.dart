@@ -111,23 +111,41 @@ class _InviteSupervisorPageState extends State<InviteSupervisorPage> {
       print('Supervision IDs: $supervisionIds'); // Debug print
 
       // Get all users involved in these supervision relationships
+      // BUT only include users with ACCEPTED or PENDING supervision relationships
+      // Allow REJECTED users to be searchable again
       final Set<String> supervisionUserIds = <String>{};
       if (supervisionIds.isNotEmpty) {
+        // First, get the status of each supervision
+        final supervisionStatusQuery = await FirebaseFirestore.instance
+            .collection('Supervision')
+            .where('SupervisionID', whereIn: supervisionIds.toList())
+            .get();
+        
+        final Map<String, String> supervisionStatusMap = {};
+        for (var doc in supervisionStatusQuery.docs) {
+          supervisionStatusMap[doc['SupervisionID']] = doc['Status'];
+        }
+        
+        // Only include users from ACCEPTED or PENDING supervisions
+        // Allow REJECTED users to be searchable again
         for (String supervisionId in supervisionIds) {
-          final supervisionDetailsQuery = await FirebaseFirestore.instance
-              .collection('SupervisionList')
-              .where('SupervisionID', isEqualTo: supervisionId)
-              .get();
-          
-          for (var doc in supervisionDetailsQuery.docs) {
-            final userId = doc['UserID'] as String;
-            if (userId != widget.currentUser.userID) {
-              supervisionUserIds.add(userId);
+          final status = supervisionStatusMap[supervisionId];
+          if (status == 'accepted' || status == 'pending') {
+            final supervisionDetailsQuery = await FirebaseFirestore.instance
+                .collection('SupervisionList')
+                .where('SupervisionID', isEqualTo: supervisionId)
+                .get();
+            
+            for (var doc in supervisionDetailsQuery.docs) {
+              final userId = doc['UserID'] as String;
+              if (userId != widget.currentUser.userID) {
+                supervisionUserIds.add(userId);
+              }
             }
           }
         }
       }
-      print('Users with existing supervision relationships: $supervisionUserIds'); // Debug print
+      print('Users with active supervision relationships (accepted/pending): $supervisionUserIds'); // Debug print
 
       final Map<String, UserModel> usersMap = {};
       
@@ -233,9 +251,9 @@ class _InviteSupervisorPageState extends State<InviteSupervisorPage> {
                 SnackBar(content: Text('You already have a pending invitation with ${invitedUser.username}.')),
               );
               return;
-            } else if (status == 'declined') {
-              // Remove the declined supervision records to allow new invitation
-              print('Removing declined supervision records for reinvitation...');
+            } else if (status == 'rejected') {
+              // Remove the rejected supervision records to allow new invitation
+              print('Removing rejected supervision records for reinvitation...');
               
               // Delete the supervision record
               await supervisionDoc.reference.delete();
@@ -1126,6 +1144,7 @@ class _InviteSupervisorPageState extends State<InviteSupervisorPage> {
     );
   }
 }
+
 
 
 
